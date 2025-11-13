@@ -609,3 +609,218 @@ from:
 ```
 
 ---
+
+## Question 7
+
+1. You are *given* a certificate and a key, usually at paths like:
+
+   * `/root/certs/tls.crt`
+   * `/root/certs/tls.key`
+
+2. You must create a **TLS Secret** in Kubernetes.
+
+3. You must update a **Deployment** to use that secret, either as:
+   ✔️ a **volume** (mounted cert/key files)
+   or
+   ✔️ environment variable (less common — usually NOT for TLS)
+---
+
+### Solution**
+
+
+## **Step 1 — Create the TLS secret**
+
+### Command:
+
+```bash
+kubectl create secret tls my-tls-secret \
+  --cert=/root/certs/tls.crt \
+  --key=/root/certs/tls.key \
+  -n default
+```
+
+If they specify a namespace, use it:
+
+```bash
+kubectl create secret tls my-tls-secret \
+  --cert=/root/certs/tls.crt \
+  --key=/root/certs/tls.key \
+  -n mynamespace
+```
+
+---
+
+## **Step 2 — Edit Deployment to mount the TLS secret**
+
+Open deployment:
+
+```bash
+kubectl edit deployment mydeploy -n default
+```
+
+Under `.spec.template.spec.volumes` add:
+
+```yaml
+volumes:
+- name: tls-vol
+  secret:
+    secretName: my-tls-secret
+```
+
+Under container `.volumeMounts` add:
+
+```yaml
+volumeMounts:
+- name: tls-vol
+  mountPath: /etc/tls            # choose any secure path
+  readOnly: true
+```
+
+---
+
+# 📌 **FINAL YAML ANSWER (Exactly what CKS expects)**
+
+### **TLS Secret**
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-tls-secret
+  namespace: default
+type: kubernetes.io/tls
+data:
+  tls.crt: <base64-cert>
+  tls.key: <base64-key>
+```
+
+(You do **NOT** need to base64 encode if you create via `kubectl create secret tls`.)
+
+---
+
+### **Deployment**
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mydeploy
+  namespace: default
+spec:
+  replicas: 1
+  template:
+    spec:
+      volumes:
+      - name: tls-vol
+        secret:
+          secretName: my-tls-secret
+
+      containers:
+      - name: app
+        image: nginx
+        volumeMounts:
+        - name: tls-vol
+          mountPath: /etc/tls
+          readOnly: true
+```
+
+---
+
+## Question 8
+
+A namespace named **`confidential`** has **Pod Security Admission (restricted)** applied.
+
+Meaning:
+
+🔒 Only **restricted** security settings are allowed in this namespace.
+❌ Default pods will **NOT start** unless they meet restricted rules.
+
+**Your task:**
+
+👉 Modify the Pod/Deployment YAML so it **complies with the restricted PSA**.
+---
+
+### Solution**
+
+
+## **Step 1 — Inspect namespace**
+
+```bash
+kubectl get ns confidential --show-labels
+```
+
+You will see something like:
+
+```
+pod-security.kubernetes.io/enforce=restricted
+```
+
+---
+
+## **Step 2 — Try to create a pod (it fails)**
+
+You might see errors like:
+
+```
+pod is forbidden: violates PodSecurity "restricted"
+```
+
+This is expected.
+
+---
+
+## **Step 3 — Patch your Pod/Deployment to satisfy "restricted"**
+
+Add the following under each **container securityContext**:
+
+```yaml
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000         # or UID provided in the exam
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+    - ALL
+```
+
+If the Deployment used `securityContext` at pod level, add:
+
+```yaml
+securityContext:
+  fsGroup: 2000
+  runAsNonRoot: true
+```
+
+(Only if needed.)
+
+---
+
+# 📌 **FINAL YAML FIX (What the CKS grader expects)**
+
+**Example Deployment inside `confidential` namespace:**
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secure-app
+  namespace: confidential
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+      - name: app
+        image: nginx
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+```
+
+---

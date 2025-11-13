@@ -1,283 +1,178 @@
-Below are **Question 5** and **Question 6** solved in full **CKS-exam style**, including:
+Below is the **CKS-style solution** for **Question 8**, which is a *very common real exam scenario* involving **strict/restricted Pod Security Admission (PSA)** or **OPA Gatekeeper**–like rules preventing pods from running in a namespace.
 
-✅ Formula
+I’ll give you:
+
+✅ What the question means
+✅ Formula for fixing the issue
 ✅ Step-by-step solution
-✅ Exact YAML specs you would apply
-✅ Common exam mistakes to avoid
+✅ Exact YAML patches for a compliant pod
+✅ The typical “restricted” PSA requirements
+✅ Common exam mistakes
 
 ---
 
-# 🧩 **QUESTION 5 — ServiceAccount: disable automount + mount projected token readOnly**
+# 🧩 **QUESTION 8 — Namespace `confidential` Enforced with Restricted Rules → Pods Fail to Run**
 
-## 🎯 **WHAT THE QUESTION WANTS**
+## 🎯 **WHAT THE QUESTION IS REALLY ABOUT**
 
-1. Create a **ServiceAccount** in namespace `monitoring`
-   → **automountServiceAccountToken: false**
+A namespace named **`confidential`** has **Pod Security Admission (restricted)** applied.
 
-2. In a **Deployment**, mount this serviceAccount’s token **as a projected volume**
-   → token must be **readOnly**
-   → must use `serviceAccountToken` type projection
-   → must specify `audience` + `path` + `expirationSeconds`
+Meaning:
+
+🔒 Only **restricted** security settings are allowed in this namespace.
+❌ Default pods will **NOT start** unless they meet restricted rules.
+
+**Your task:**
+
+👉 Modify the Pod/Deployment YAML so it **complies with the restricted PSA**.
+
+This is a classic CKS task.
 
 ---
 
-# ✅ **FORMULA (CKS CHEAT SHEET)**
+# 🔐 **WHAT "RESTRICTED" MEANS (CKS CHEAT SHEET)**
 
-### **ServiceAccount**
+To run inside a “restricted” namespace, pods must include:
 
-```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: <sa-name>
-  namespace: monitoring
-automountServiceAccountToken: false
+### Mandatory fields:
+
+```
+runAsNonRoot: true
+runAsUser: <non-root UID>
+allowPrivilegeEscalation: false
+readOnlyRootFilesystem: true
 ```
 
-### **Deployment**
+### Prohibited fields:
 
-```yaml
-spec:
-  serviceAccountName: <sa-name>
-  volumes:
-  - name: token-vol
-    projected:
-      sources:
-      - serviceAccountToken:
-          path: token
-          audience: api
-          expirationSeconds: 3600
-  containers:
-  - name: app
-    volumeMounts:
-    - name: token-vol
-      mountPath: /var/run/secrets/tokens
-      readOnly: true
+```
+privileged: true          ❌
+hostPID / hostIPC / hostNetwork: true ❌
+capabilities: add: ["NET_ADMIN"] (or any adds) ❌
+seLinuxOptions (often blocked) ❌
+```
+
+### Allowed only if dropped:
+
+```
+capabilities:
+  drop: ["ALL"]
+```
+
+### AppArmor (if mentioned):
+
+```
+container.apparmor.security.beta.kubernetes.io/<name>: runtime/default
 ```
 
 ---
 
-# 🧱 **STEP-BY-STEP SOLUTION (EXAM STYLE)**
+# 🧱 **STEP-BY-STEP SOLUTION**
 
-## **Step 1 — Create the ServiceAccount**
+## **Step 1 — Inspect namespace**
 
 ```bash
-kubectl create namespace monitoring
-kubectl create serviceaccount monitor-sa -n monitoring
+kubectl get ns confidential --show-labels
 ```
 
-Now edit it:
+You will see something like:
 
-```bash
-kubectl edit sa monitor-sa -n monitoring
 ```
-
-Add:
-
-```yaml
-automountServiceAccountToken: false
+pod-security.kubernetes.io/enforce=restricted
 ```
 
 ---
 
-## **Step 2 — Modify Deployment to use projected token**
+## **Step 2 — Try to create a pod (it fails)**
 
-Open file or edit:
+You might see errors like:
 
-```bash
-kubectl edit deployment mydeploy -n monitoring
+```
+pod is forbidden: violates PodSecurity "restricted"
 ```
 
-Add under `.spec.template.spec`:
-
-### volumes:
-
-```yaml
-volumes:
-- name: token-vol
-  projected:
-    sources:
-    - serviceAccountToken:
-        path: token
-        audience: api
-        expirationSeconds: 3600
-```
-
-### container volumeMounts:
-
-```yaml
-containers:
-- name: app
-  image: myimg
-  volumeMounts:
-  - name: token-vol
-    mountPath: /var/run/secrets/tokens
-    readOnly: true
-```
-
-### serviceAccountName:
-
-```yaml
-serviceAccountName: monitor-sa
-```
+This is expected.
 
 ---
 
-# **FULL EXPECTED ANSWER (Copy/Paste Ready)**
+## **Step 3 — Patch your Pod/Deployment to satisfy "restricted"**
 
-### **ServiceAccount**
+Add the following under each **container securityContext**:
 
 ```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: monitor-sa
-  namespace: monitoring
-automountServiceAccountToken: false
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000         # or UID provided in the exam
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+    - ALL
 ```
 
-### **Deployment**
+If the Deployment used `securityContext` at pod level, add:
+
+```yaml
+securityContext:
+  fsGroup: 2000
+  runAsNonRoot: true
+```
+
+(Only if needed.)
+
+---
+
+# 📌 **FINAL YAML FIX (What the CKS grader expects)**
+
+**Example Deployment inside `confidential` namespace:**
 
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: secure-app
-  namespace: monitoring
+  namespace: confidential
 spec:
   replicas: 1
   template:
     spec:
-      serviceAccountName: monitor-sa
-
-      volumes:
-      - name: token-vol
-        projected:
-          sources:
-          - serviceAccountToken:
-              path: token
-              audience: api
-              expirationSeconds: 3600
-
       containers:
       - name: app
         image: nginx
-        volumeMounts:
-        - name: token-vol
-          mountPath: /var/run/secrets/tokens
-          readOnly: true
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
 ```
 
 ---
 
-# ⚠️ COMMON MISTAKES (CKS TRAPS)
+# ⚠️ **COMMON MISTAKES (These will FAIL PSA restricted)**
 
-❌ Putting `automountServiceAccountToken` inside Deployment — wrong
-❌ Forgetting `projected` keyword
-❌ Using `secretRef` instead of `serviceAccountToken:`
-❌ Missing `readOnly: true` in volumeMount
-❌ Missing `serviceAccountName`
-
----
-
-# 🧩 **QUESTION 6 — NetworkPolicies**
-
-### **What the question wants:**
-
-1. Create a NetworkPolicy that **DENIES all ingress** traffic in namespace `prod`.
-2. Create another policy that **allows traffic from pods in namespace prod → pods in namespace data**
-   Using **pod labels** + **namespace selectors**.
+❌ Missing `runAsNonRoot`
+❌ `runAsUser` set to "0" (root)
+❌ Missing `allowPrivilegeEscalation: false`
+❌ Missing `readOnlyRootFilesystem: true`
+❌ Adding capabilities
+❌ Using privileged containers
+❌ hostNetwork / hostPID / hostIPC set to true
+❌ Putting securityContext at wrong indentation
 
 ---
 
-# 🧱 PART 1 — Deny all ingress in namespace `prod`
+# 🔎 **Why pods were not running?**
 
-Namespace must have **default deny** policy.
+Because restricted PSA requires containers to **not run as root** and to follow strong securityContext rules.
+Any default container configuration violates these rules → Pod rejected.
 
-### **deny-all-ingress.yaml**
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: deny-all-ingress
-  namespace: prod
-spec:
-  podSelector: {}     # all pods
-  policyTypes:
-  - Ingress
-  ingress: []          # deny everything
-```
+After adding the fields above → Pod will run successfully.
 
 ---
 
-# 🧱 PART 2 — Allow pods from `prod` → `data` namespace (ingress allow)
+# 🚀 Want to continue?
 
-You must:
-
-* Select pods in namespace `data` using **podSelector**
-* Allow traffic only from pods in namespace `prod`
-  → using **namespaceSelector** with labels
-  → AND with podSelector
-
-### **Pre-req:** Add labels to namespaces
-
-```bash
-kubectl label namespace prod name=prod --overwrite
-kubectl label namespace data name=data --overwrite
-```
-
----
-
-### **allow-prod-to-data.yaml**
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-prod-to-data
-  namespace: data
-spec:
-  podSelector:
-    matchLabels:
-      role: backend   # example: depends on question
-  policyTypes:
-  - Ingress
-  ingress:
-  - from:
-    - namespaceSelector:
-        matchLabels:
-          name: prod
-      podSelector:
-        matchLabels:
-          app: myapp   # example label from the question
-```
-
-> ⚠️ In CKS, they will give you **labels of pods in prod** and **labels of pods in data**.
-> Replace the labels with the ones from the question.
-
----
-
-# 📌 FINAL FORMULA SUMMARY FOR QUESTION 6
-
-### Deny all ingress:
-
-```yaml
-podSelector: {}
-ingress: []
-policyTypes: [Ingress]
-```
-
-### Allow traffic from namespace prod:
-
-```yaml
-from:
-- namespaceSelector: { label: prod }
-  podSelector: { label: <prod-app-label> }
-```
-
----
-
-# 🚀 Want me to generate **all questions 1–6** again as a single combined mock exam?
-
-I can produce a **CKS exam simulation** with all these tasks in a real kubeadm environment format.
+Send **Question 9** if you have one. I can build the **full combined CKS practice exam** from questions 1–8 as a PDF if you want.
