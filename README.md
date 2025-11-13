@@ -198,3 +198,204 @@ That means anonymous-auth is disabled.
 * API server now denies any unauthenticated access.
 * RBAC controls are enforced.
 * Admission plugin NodeRestriction restricts kubelet certificate usage.
+
+---
+
+## Question 3
+
+> You are given:
+>
+> * A **Dockerfile**
+> * A **Pod/Deployment YAML file**
+>
+> You must apply **best security practices**, including using:
+>
+> * A **non-root user** (`nobody`, UID `63356` provided)
+> * A **readOnlyRootFilesystem** in the Pod spec
+>
+> Modify both files accordingly.
+
+---
+
+### Solution**
+
+# **✔️ Part 1 — Fix the Dockerfile**
+
+### 🔧 **Before (root user)**
+
+Example (what they usually give):
+
+```dockerfile
+FROM ubuntu:20.04
+# ... some commands
+USER root
+CMD ["python", "app.py"]
+```
+
+### 🔧 **After (non-root best practice)**
+
+If user `nobody` already exists:
+
+```dockerfile
+FROM ubuntu:20.04
+
+# (Optional) create a custom user if UID given:
+RUN useradd -u 63356 -s /sbin/nologin appuser
+
+# Switch to non-root user
+USER 63356
+
+CMD ["python", "app.py"]
+```
+
+Or if they explicitly ask to use `nobody`:
+
+```dockerfile
+USER nobody
+```
+
+> 💡 Using `USER` in Dockerfile is required for CKS.
+> They expect **non-root image** + **non-root pod securityContext**.
+
+---
+
+# **✔️ Part 2 — Fix the YAML file**
+
+They typically give you a Deployment like:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+      - name: app
+        image: myimg:v1
+```
+
+### 🔧 **You must add `securityContext`:**
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  replicas: 1
+  template:
+    spec:
+      securityContext:
+        runAsUser: 63356
+        runAsNonRoot: true
+
+      containers:
+      - name: app
+        image: myimg:v1
+        securityContext:
+          readOnlyRootFilesystem: true
+```
+
+---
+
+## Question 4
+
+> You are given a Deployment with **two containers**.
+>
+> You must add a **securityContext** to **both containers**, using:
+>
+> * `runAsUser: <ID given in question>`
+> * `allowPrivilegeEscalation: false`
+> * `readOnlyRootFilesystem: true`
+
+
+---
+
+### Solution**
+
+
+#### **Step 1 — Open the Deployment**
+
+```bash
+kubectl edit deployment <name>
+```
+
+or if file is provided:
+
+```bash
+vi deployment.yaml
+```
+
+---
+
+#### **Step 2 — Locate the two containers**
+
+Example given:
+
+```yaml
+containers:
+  - name: app1
+    image: myimg1:v1
+  - name: app2
+    image: myimg2:v1
+```
+
+---
+
+#### **Step 3 — Add the required securityContext to each container**
+
+Use the UID provided in the question.
+Example: UID = `63356`
+
+### Updated version:
+
+```yaml
+containers:
+  - name: app1
+    image: myimg1:v1
+    securityContext:
+      runAsUser: 63356
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+
+  - name: app2
+    image: myimg2:v1
+    securityContext:
+      runAsUser: 63356
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+```
+
+---
+
+# 🎯 **Final Expected YAML Answer (Ready-to-Paste)**
+
+Replace `<UID>` with the user ID given in the exam.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secure-app
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+      - name: app1
+        image: myimg1:v1
+        securityContext:
+          runAsUser: <UID>
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+
+      - name: app2
+        image: myimg2:v1
+        securityContext:
+          runAsUser: <UID>
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+```
