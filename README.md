@@ -399,3 +399,213 @@ spec:
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
 ```
+
+---
+
+## Question 5
+
+1. Create a **ServiceAccount** in namespace `monitoring`
+   → **automountServiceAccountToken: false**
+
+2. In a **Deployment**, mount this serviceAccount’s token **as a projected volume**
+   → token must be **readOnly**
+   → must use `serviceAccountToken` type projection
+   → must specify `audience` + `path` + `expirationSeconds`
+---
+
+### Solution**
+## **Step 1 — Create the ServiceAccount**
+
+```bash
+kubectl create namespace monitoring
+kubectl create serviceaccount monitor-sa -n monitoring
+```
+
+Now edit it:
+
+```bash
+kubectl edit sa monitor-sa -n monitoring
+```
+
+Add:
+
+```yaml
+automountServiceAccountToken: false
+```
+## **Step 2 — Modify Deployment to use projected token**
+
+Open file or edit:
+
+```bash
+kubectl edit deployment mydeploy -n monitoring
+```
+
+Add under `.spec.template.spec`:
+
+### volumes:
+
+```yaml
+volumes:
+- name: token-vol
+  projected:
+    sources:
+    - serviceAccountToken:
+        path: token
+        audience: api
+        expirationSeconds: 3600
+```
+
+### container volumeMounts:
+
+```yaml
+containers:
+- name: app
+  image: myimg
+  volumeMounts:
+  - name: token-vol
+    mountPath: /var/run/secrets/tokens
+    readOnly: true
+```
+
+### serviceAccountName:
+
+```yaml
+serviceAccountName: monitor-sa
+```
+
+# **FULL EXPECTED ANSWER (Copy/Paste Ready)**
+
+### **ServiceAccount**
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: monitor-sa
+  namespace: monitoring
+automountServiceAccountToken: false
+```
+
+### **Deployment**
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secure-app
+  namespace: monitoring
+spec:
+  replicas: 1
+  template:
+    spec:
+      serviceAccountName: monitor-sa
+
+      volumes:
+      - name: token-vol
+        projected:
+          sources:
+          - serviceAccountToken:
+              path: token
+              audience: api
+              expirationSeconds: 3600
+
+      containers:
+      - name: app
+        image: nginx
+        volumeMounts:
+        - name: token-vol
+          mountPath: /var/run/secrets/tokens
+          readOnly: true
+```
+
+---
+
+## Question 6
+
+1. Create a NetworkPolicy that **DENIES all ingress** traffic in namespace `prod`.
+2. Create another policy that **allows traffic from pods in namespace prod → pods in namespace data**
+   Using **pod labels** + **namespace selectors**.
+---
+
+### Solution**
+
+# 🧱 PART 1 — Deny all ingress in namespace `prod`
+
+Namespace must have **default deny** policy.
+
+### **deny-all-ingress.yaml**
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress
+  namespace: prod
+spec:
+  podSelector: {}     # all pods
+  policyTypes:
+  - Ingress
+  ingress: []          # deny everything
+```
+
+# 🧱 PART 2 — Allow pods from `prod` → `data` namespace (ingress allow)
+
+You must:
+
+* Select pods in namespace `data` using **podSelector**
+* Allow traffic only from pods in namespace `prod`
+  → using **namespaceSelector** with labels
+  → AND with podSelector
+
+### **Pre-req:** Add labels to namespaces
+
+```bash
+kubectl label namespace prod name=prod --overwrite
+kubectl label namespace data name=data --overwrite
+```
+
+
+### **allow-prod-to-data.yaml**
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prod-to-data
+  namespace: data
+spec:
+  podSelector:
+    matchLabels:
+      role: backend   # example: depends on question
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: prod
+      podSelector:
+        matchLabels:
+          app: myapp   # example label from the question
+```
+---
+
+# 📌 FINAL FORMULA SUMMARY FOR QUESTION 6
+
+### Deny all ingress:
+
+```yaml
+podSelector: {}
+ingress: []
+policyTypes: [Ingress]
+```
+
+### Allow traffic from namespace prod:
+
+```yaml
+from:
+- namespaceSelector: { label: prod }
+  podSelector: { label: <prod-app-label> }
+```
+
+---
