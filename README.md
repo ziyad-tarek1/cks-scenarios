@@ -930,3 +930,148 @@ Audit logs stored at:
 ```bash
 /var/log/kubernetes/audit.log
 ```
+---
+
+## Question 10
+
+1. Remove user **developer** from **docker** group
+2. Disable **TCP** access to Docker daemon
+3. Make Docker listen **only** on the Unix socket:
+
+   ```
+   /var/run/docker.sock
+   ```
+---
+
+### Solution**
+# ✅ **Step 1 — Remove user developer from docker group**
+
+```bash
+sudo gpasswd -d developer docker
+```
+
+Or:
+
+```bash
+sudo deluser developer docker
+```
+
+Confirm:
+
+```bash
+id developer
+```
+
+You should NOT see `docker` group.
+
+---
+
+# ✅ **Step 2 — Deny TCP traffic to Docker daemon**
+
+Docker listens on TCP only if you explicitly enabled it in:
+
+```
+/etc/docker/daemon.json
+```
+
+Edit it to **remove any TCP host**:
+
+### ❌ If you have:
+
+```json
+{
+  "hosts": [
+    "tcp://0.0.0.0:2375",
+    "unix:///var/run/docker.sock"
+  ]
+}
+```
+
+### ✅ Replace with:
+
+```json
+{
+  "hosts": [
+    "unix:///var/run/docker.sock"
+  ]
+}
+```
+
+---
+
+# ✅ **Step 3 — Enforce Unix Socket Only (Mandatory CKS)**
+
+Ensure Docker is **not listening on TCP**.
+
+Check service file:
+
+```
+/lib/systemd/system/docker.service
+```
+
+Look for:
+
+```
+ExecStart=/usr/bin/dockerd
+```
+
+If you see any `-H tcp://...`, delete it.
+
+Example:
+
+### ❌ If you have:
+
+```
+ExecStart=/usr/bin/dockerd -H tcp://0.0.0.0:2375 -H unix:///var/run/docker.sock
+```
+
+### ✅ Replace with:
+
+```
+ExecStart=/usr/bin/dockerd -H unix:///var/run/docker.sock
+```
+
+Then reload & restart:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+```
+
+---
+
+# 🔐 **Step 4 — (Optional but expected in CKS) Block port 2375 using firewall**
+
+If TCP was previously exposed, block it:
+
+### UFW:
+
+```bash
+sudo ufw deny 2375/tcp
+```
+
+### IPTables:
+
+```bash
+sudo iptables -A INPUT -p tcp --dport 2375 -j DROP
+```
+
+---
+
+# 🔍 Verification
+
+### Check Docker isn't listening on TCP:
+
+```bash
+sudo ss -ltnp | grep dockerd
+```
+
+You should see:
+
+```
+unix  /var/run/docker.sock
+```
+
+No `tcp` entries.
+
+---
