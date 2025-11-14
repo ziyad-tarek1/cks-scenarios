@@ -824,3 +824,109 @@ spec:
 ```
 
 ---
+
+## Question 9
+
+1. **Enable audit logging** in the kube-apiserver.
+2. Add `--audit-policy-file=/etc/kubernetes/audit/audit.yaml`
+3. Configure log rotation:
+
+   * `--audit-log-maxage=<given>`
+   * `--audit-log-maxbackup=<given>`
+   * `--audit-log-maxsize=<given>` (usually also needed)
+4. Create an **audit policy** with:
+
+   * **All namespaces:** request+response metadata
+   * **`web-apps` namespace:** deployments → audit **metadata level**
+   * **All namespaces:** delete on ConfigMaps & Secrets → **RequestResponse body**
+   * Everything else → **Metadata**
+
+---
+
+### Solution**
+
+
+# ✅ **Step 1 – Edit kube-apiserver manifest**
+
+File:
+
+```
+/etc/kubernetes/manifests/kube-apiserver.yaml
+```
+
+Add these flags under `command:`:
+
+```yaml
+    - --audit-policy-file=/etc/kubernetes/audit/audit.yaml
+    - --audit-log-path=/var/log/kubernetes/audit.log
+    - --audit-log-maxage=5
+    - --audit-log-maxbackup=10
+    - --audit-log-maxsize=100
+```
+
+(Create directory if required)
+
+```bash
+sudo mkdir -p /etc/kubernetes/audit
+```
+
+---
+
+# ✅ **Step 2 – Create audit policy**
+
+File:
+
+```
+/etc/kubernetes/audit/audit.yaml
+```
+
+Content:
+
+```yaml
+apiVersion: audit.k8s.io/v1
+kind: Policy
+
+# Default level
+rules:
+
+  # 1️⃣ Log delete operations of ConfigMaps & Secrets with RequestResponse body
+  - level: RequestResponse
+    verbs: ["delete"]
+    resources:
+    - group: ""
+      resources: ["configmaps", "secrets"]
+
+  # 2️⃣ Capture Deployments interactions in web-apps namespace (metadata)
+  - level: Metadata
+    resources:
+    - group: "apps"
+      resources: ["deployments"]
+    namespaces: ["web-apps"]
+
+  # 3️⃣ Log ALL namespace interactions (metadata)
+  - level: Metadata
+    resources:
+    - group: ""
+      resources: ["namespaces"]
+
+  # 4️⃣ Everything else at Metadata level
+  - level: Metadata
+```
+
+---
+
+# 🔄 **Step 3 – kubelet automatically restarts kube-apiserver**
+
+No need for manual restart because it’s a static pod under `/etc/kubernetes/manifests`.
+
+Check:
+
+```bash
+kubectl logs -n kube-system kube-apiserver-<node>
+```
+
+Audit logs stored at:
+
+```bash
+/var/log/kubernetes/audit.log
+```
