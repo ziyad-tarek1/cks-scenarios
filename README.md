@@ -1075,3 +1075,243 @@ unix  /var/run/docker.sock
 No `tcp` entries.
 
 ---
+
+## Question 11
+
+upgrade nodes in cluster to v1.31.1
+---
+
+### Solution**
+
+https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+
+---
+
+## Question 12
+
+1. Create a TLS secret using a given key + cert file
+2. Create an Ingress that uses that TLS secret
+3. Add a host (given in the exam)
+4. Test using curl
+---
+
+### Solution**
+# ✅ Step 1 — Create TLS Secret (using provided `cert.crt` & `cert.key`)
+
+```bash
+kubectl create secret tls tls-secret \
+  --cert=/path/to/cert.crt \
+  --key=/path/to/cert.key \
+  -n your-namespace
+```
+
+If namespace is not specified in the question → use `default`.
+
+---
+
+# ✅ Step 2 — Create an Ingress using TLS
+
+Example host from exam: `app.example.com`
+
+```yaml
+# ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: myapp-ingress
+  namespace: your-namespace
+spec:
+  tls:
+    - hosts:
+        - app.example.com
+      secretName: tls-secret
+  rules:
+    - host: app.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: myapp-svc
+                port:
+                  number: 80
+```
+
+Apply:
+
+```bash
+kubectl apply -f ingress.yaml
+```
+
+---
+
+# ✅ Step 3 — Test Using curl (IMPORTANT FOR CKS)
+
+If self-signed: use `-k`:
+
+```bash
+curl -k https://app.example.com
+```
+
+If DNS not resolvable, use `/etc/hosts`:
+
+```bash
+sudo sh -c 'echo "$(kubectl get ing myapp-ingress -n your-namespace -o jsonpath={.status.loadBalancer.ingress[0].ip}) app.example.com" >> /etc/hosts'
+```
+
+Then:
+
+```bash
+curl -k https://app.example.com
+```
+
+---
+
+## Question 13
+
+1. Enable `ImagePolicyWebhook` in kube-apiserver
+2. Add the full path of `kube.conf` in `/etc/kubernetes/imagepolicy/imagepolicyfile.yaml`
+3. Change default allow = **false**
+4. In `kube.conf`, set the `server:` URL (given in exam)
+5. Test by applying the ReplicationController YAML
+
+---
+
+kubeadm clusters store the kube-apiserver flags in:
+
+```
+/etc/kubernetes/manifests/kube-apiserver.yaml
+```
+
+You edit this file → kubelet automatically restarts the API server.
+
+---
+
+# ✅ Step 1 — Create directory for ImagePolicyWebhook
+
+```bash
+sudo mkdir -p /etc/kubernetes/imagepolicy
+```
+
+---
+
+# ✅ Step 2 — Create the image policy config file
+
+File path:
+
+```
+/etc/kubernetes/imagepolicy/imagepolicyfile.yaml
+```
+
+Content:
+
+```yaml
+apiVersion: imagepolicy.k8s.io/v1alpha1
+kind: ImagePolicyWebhook
+allowTTL: 60
+denyTTL: 60
+retryBackoff: 500
+defaultAllow: false
+kubeConfigFile: "/etc/kubernetes/imagepolicy/kube.conf"
+```
+
+This is **the exact format used in CKS**.
+
+---
+
+# ✅ Step 3 — Create the kube.conf for the webhook client
+
+Location:
+
+```
+/etc/kubernetes/imagepolicy/kube.conf
+```
+
+Content (example URL from exam):
+
+```yaml
+apiVersion: v1
+kind: Config
+clusters:
+- cluster:
+    server: https://image-webhook.example.com:443
+    insecure-skip-tls-verify: true
+  name: image-policy-cluster
+contexts:
+- context:
+    cluster: image-policy-cluster
+    user: image-bot
+  name: image-policy-context
+current-context: image-policy-context
+users:
+- name: image-bot
+  user:
+    token: dummy-token
+```
+
+The important part is:
+
+```
+server: <URL from question>
+```
+
+---
+
+# ✅ Step 4 — Enable ImagePolicyWebhook in kube-api server
+
+Edit:
+
+```
+sudo vi /etc/kubernetes/manifests/kube-apiserver.yaml
+```
+
+Add to command arguments:
+
+```yaml
+- --admission-control-config-file=/etc/kubernetes/imagepolicy/imagepolicyfile.yaml
+- --enable-admission-plugins=ImagePolicyWebhook
+```
+
+If the line already exists, append `,ImagePolicyWebhook` to it.
+
+Save the file — **kubelet automatically restarts kube-apiserver**.
+
+Check API server is running:
+
+```bash
+kubectl get pods -n kube-system
+```
+
+---
+
+# ✅ Step 5 — Test using the provided ReplicationController YAML
+
+The exam will give you something like:
+
+```yaml
+kubectl apply -f test-rc.yaml
+```
+
+The expected behavior:
+
+* If the image is ALLOWED → RC is created
+* If the image is DENIED → RC creation fails
+
+Run:
+
+```bash
+kubectl apply -f test-rc.yaml
+```
+
+Check:
+
+```bash
+kubectl describe rc test-rc
+```
+
+Or check API server logs:
+
+```bash
+sudo journalctl -u kubelet -f
+```
