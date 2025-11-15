@@ -8,9 +8,7 @@
 > 2. Enable **NodeRestriction** admission plugin and **RBAC + NodeRestriction** authorization modes in **kube-apiserver**.
 > 3. Configure **etcd** with `--client-cert-auth=true`.
 ---
-### Solutio:
-
-#### 🧱 Step 1 — Kubelet: Disable Anonymous Users & Enable Webhook Auth
+### Solution:
 
 #### 🧱 Step 1 — Kubelet: Disable Anonymous Users & Enable Webhook Auth
 
@@ -130,7 +128,7 @@ You hardened:
 
 ---
 
-### Solution**
+### Solution:
 
 #### 🧱 Step 1 — Edit API Server Static Pod
 
@@ -217,7 +215,7 @@ That means anonymous-auth is disabled.
 
 ---
 
-### Solution**
+### Solution:
 
 # **✔️ Part 1 — Fix the Dockerfile**
 
@@ -314,7 +312,7 @@ spec:
 
 ---
 
-### Solution**
+### Solution:
 
 
 #### **Step 1 — Open the Deployment**
@@ -413,7 +411,7 @@ spec:
    → must specify `audience` + `path` + `expirationSeconds`
 ---
 
-### Solution**
+### Solution:
 ## **Step 1 — Create the ServiceAccount**
 
 ```bash
@@ -527,7 +525,7 @@ spec:
    Using **pod labels** + **namespace selectors**.
 ---
 
-### Solution**
+### Solution:
 
 # 🧱 PART 1 — Deny all ingress in namespace `prod`
 
@@ -625,7 +623,7 @@ from:
    ✔️ environment variable (less common — usually NOT for TLS)
 ---
 
-### Solution**
+### Solution:
 
 
 ## **Step 1 — Create the TLS secret**
@@ -740,7 +738,7 @@ Meaning:
 👉 Modify the Pod/Deployment YAML so it **complies with the restricted PSA**.
 ---
 
-### Solution**
+### Solution:
 
 
 ## **Step 1 — Inspect namespace**
@@ -843,7 +841,7 @@ spec:
 
 ---
 
-### Solution**
+### Solution:
 
 
 # ✅ **Step 1 – Edit kube-apiserver manifest**
@@ -943,7 +941,7 @@ Audit logs stored at:
    ```
 ---
 
-### Solution**
+### Solution:
 # ✅ **Step 1 — Remove user developer from docker group**
 
 ```bash
@@ -1081,7 +1079,7 @@ No `tcp` entries.
 upgrade nodes in cluster to v1.31.1
 ---
 
-### Solution**
+### Solution:
 
 https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
 
@@ -1095,7 +1093,7 @@ https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
 4. Test using curl
 ---
 
-### Solution**
+### Solution:
 # ✅ Step 1 — Create TLS Secret (using provided `cert.crt` & `cert.key`)
 
 ```bash
@@ -1332,7 +1330,7 @@ You must identify the offending pod and mention **Falco** as the recommended too
 
 ---
 
-### Solution**
+### Solution:
 ---
 
 # ✅ **Step 1 — Check security context of the 3 Deployments**
@@ -1440,7 +1438,7 @@ You must use: **bom** (Syft-style tool)
 
 ---
 
-### Solution**
+### Solution:
 
 
 Credit: Anchore (open-source) — used for SBOM generation.
