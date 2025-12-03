@@ -1693,117 +1693,184 @@ kubectl scale deploy <name> -n <namespace> --replicas=0
 ---
 
 ## Question 15
-You have a Pod with **3 containers**:
 
-```
-alpine:3.14
-alpine:3.16
-alpine:3.18
-```
-
-You need to:
-
-1. Scan all three images
-2. Find which image contains **libproc_ar version 1.3-45**
-3. Generate a BOM
-4. Redirect the output to `spdx.json`
-
-You must use: **bom** (Syft-style tool)
+> You have a Pod with **3 containers** using different Docker images.
+>
+> 1. Scan all three images to find which image contains a specific package (package name and version will be provided in the exam).
+> 2. Generate an **SBOM report in SPDX format** for that image using `bom` and save it to the location specified in the exam.
+> 3. Generate a **CycloneDX report** for the same image using `trivy` and save it to the location specified in the exam.
 
 ---
 
 ### Solution:
 
+# ✅ **Step 1 — Identify the Pod and its container images**
 
-Credit: Anchore (open-source) — used for SBOM generation.
+```bash
+# Get the pod name
+kubectl get pods -A
 
-Installed name varies, either:
-
-```
-syft
-```
-
-or:
-
-```
-bom
+# Inspect the pod to see the container images
+kubectl describe pod <pod-name> -n <namespace> | grep -i image
 ```
 
-Exam commonly uses:
+Or:
 
+```bash
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[*].image}'
 ```
-bom
+
+Note the three container images (e.g., `alpine:3.14`, `alpine:3.16`, `alpine:3.18`).
+
+---
+
+# ✅ **Step 2 — Pull all images (if not already pulled)**
+
+```bash
+docker pull <image1>
+docker pull <image2>
+docker pull <image3>
 ```
 
 ---
 
-# ✅ **Step 1 — Pull all Alpine images**
+# ✅ **Step 3 — Scan each container for the specified package**
 
-If not already pulled:
+The exam will provide a package name and version to search for (e.g., `libproc_ar version 1.3-45`).
 
-```bash
-docker pull alpine:3.14
-docker pull alpine:3.16
-docker pull alpine:3.18
-```
+**Method 1: Using kubectl exec (Recommended for Alpine-based containers)**
 
----
-
-# ✅ **Step 2 — Scan each image for the library**
-
-Run:
+Since the containers are already running in the pod, you can directly check installed packages:
 
 ```bash
-bom alpine:3.14 | grep -i libproc_ar
-bom alpine:3.16 | grep -i libproc_ar
-bom alpine:3.18 | grep -i libproc_ar
+# Get container names from the pod
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.spec.containers[*].name}'
+
+# Check packages in each container
+kubectl exec <pod-name> -n <namespace> -c <container1-name> -- apk info | grep -i <package-name>
+kubectl exec <pod-name> -n <namespace> -c <container2-name> -- apk info | grep -i <package-name>
+kubectl exec <pod-name> -n <namespace> -c <container3-name> -- apk info | grep -i <package-name>
 ```
 
-You search for version **1.3-45**.
+To get package version details:
 
-Example of expected match:
+```bash
+kubectl exec <pod-name> -n <namespace> -c <container-name> -- apk info <package-name>
+```
+
+**Method 2: Using trivy to scan images**
+
+If you need to scan the images directly:
+
+```bash
+# Pull images first (if not already pulled)
+docker pull <image1>
+docker pull <image2>
+docker pull <image3>
+
+# Scan with trivy
+trivy image <image1> | grep -i <package-name>
+trivy image <image2> | grep -i <package-name>
+trivy image <image3> | grep -i <package-name>
+```
+
+Example output when found:
 
 ```
 libproc_ar 1.3-45  apk
 ```
 
----
-
-# 🟩 **Result:**
-
-The image that shows:
+Or from `apk info`:
 
 ```
-libproc_ar 1.3-45
+libproc_ar-1.3-45
 ```
-
-is the one required by the question.
-
-(Usually Alpine 3.14 or 3.16 contains this version, depending on exam version.)
 
 ---
 
-# ✅ **Step 3 — Generate SPDX SBOM for that image**
+# 🟩 **Step 4 — Identify the image containing the package**
 
-Example: if the vulnerable image is `alpine:3.16`
+The image that shows the matching package and version is the one you need to generate reports for.
+
+---
+
+# ✅ **Step 5 — Generate SBOM report using bom**
+
+The exam will specify the output location and format. Use `bom generate` with the format specified.
+
+**For SPDX format:**
+```bash
+bom generate --format json --image <image-name> -o <output-path>
+
+# Example:
+bom generate --format json --image alpine:3.18 -o /opt/course/3/spdx.json
+```
+
+**For JSON format (as shown in exam examples):**
+```bash
+bom generate --format json --image <image-name> -o <output-path>
+
+# Example:
+bom generate --format json --image alpine:3.18 -o /opt/course/3/result.json
+```
+
+> **Note:** The exam will specify whether to use `spdx-json` or `json` format. Follow the exact format specified in the question.
+
+---
+
+# ✅ **Step 6 — Generate CycloneDX report using trivy**
+
+Use `trivy image` with CycloneDX format. The exam will specify the output location (e.g., `/opt/course/3/result.cdx`).
 
 ```bash
-bom alpine:3.16 -o spdx-json > spdx.json
-```
+trivy image --format cyclonedx --output <output-path> <image-name>
 
-Or using syft syntax:
-
-```bash
-syft alpine:3.16 -o spdx-json > spdx.json
+# Example:
+trivy image --format cyclonedx --output /opt/course/3/result.cdx alpine:3.18
 ```
 
 ---
 
-# 🎯 **CKS exam expects the EXACT output redirection line:**
+# 📌 **Command Reference**
 
+**kubectl exec (for finding packages in running containers):**
+```bash
+# List all packages in a container
+kubectl exec <pod-name> -n <namespace> -c <container-name> -- apk info
+
+# Search for a specific package
+kubectl exec <pod-name> -n <namespace> -c <container-name> -- apk info | grep -i <package-name>
+
+# Get detailed info about a package
+kubectl exec <pod-name> -n <namespace> -c <container-name> -- apk info <package-name>
 ```
-> spdx.json
+
+**bom commands (for generating SBOM reports):**
+```bash
+# Generate SPDX JSON format
+bom generate --format spdx-json --image <image-name> -o <output-path>
+
+# Generate JSON format
+bom generate --format json --image <image-name> -o <output-path>
 ```
+
+**trivy commands:**
+```bash
+# Scan image for packages/vulnerabilities
+trivy image <image-name>
+
+# Generate CycloneDX format
+trivy image --format cyclonedx --output <output-path> <image-name>
+```
+
+---
+
+# 🎯 **Important Notes:**
+
+- The exam will specify the exact output paths for both reports
+- Use the exact format specified: SPDX for bom, CycloneDX for trivy
+- Verify the output files were created at the specified locations
+- The package name and version to search for will be provided in the question
 
 ---
 
