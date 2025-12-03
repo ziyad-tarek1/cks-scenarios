@@ -1903,6 +1903,7 @@ metadata:
   name: workload-mtls
   namespace: my-namespace
 spec:
+  # If it ask to be at workload level only
   selector:
     matchLabels:
       app: my-app
