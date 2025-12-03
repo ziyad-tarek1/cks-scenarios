@@ -10,8 +10,10 @@
 ---
 ### Solution:
 
-https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-reconfigure/
-https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-reconfigure/#reflecting-the-kubelet-changes
+**Reference:**
+- https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-reconfigure/
+- https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-reconfigure/#reflecting-the-kubelet-changes
+
 ```bash
 kubectl get cm -n kube-system kubelet-config
 kubectl edit cm -n kube-system kubelet-config
@@ -429,9 +431,12 @@ spec:
 ---
 
 ### Solution:
-https://kubernetes.io/docs/concepts/storage/projected-volumes/#serviceaccounttoken
 
-NOTE: `mountPath` ONLY THE DIR NAME THE FOLDER NAME IS `path`
+**Reference:**
+- https://kubernetes.io/docs/concepts/storage/projected-volumes/#serviceaccounttoken
+
+> **Note:** `mountPath` is the directory name, while the folder name in the projected volume is `path`.
+
 ## **Step 1 — Create the ServiceAccount**
 
 ```bash
@@ -760,7 +765,7 @@ Meaning:
 
 ### Solution:
 
-Note: Pod with two container
+> **Note:** This solution applies to Pods with two containers.
 
 ## **Step 1 — Inspect namespace**
 
@@ -860,10 +865,12 @@ spec:
    * **All namespaces:** delete on ConfigMaps & Secrets → **RequestResponse body**
    * Everything else → **Metadata**
 
-https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
 ---
 
 ### Solution:
+
+**Reference:**
+- https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
 
 
 # ✅ **Step 1 – Edit kube-apiserver manifest**
@@ -1098,12 +1105,14 @@ No `tcp` entries.
 
 ## Question 11
 
-upgrade nodes in cluster to v1.31.1
+> Upgrade nodes in cluster to v1.31.1
+
 ---
 
 ### Solution:
 
-https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
+**Reference:**
+- https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/
 
 ---
 
@@ -1369,8 +1378,9 @@ sudo journalctl -u kubelet -f
 >
 >    Scale the Deployment that controls that Pod down to 0.
 
-Note: also watch this : https://www.youtube.com/watch?v=K6rSAInLrQk&list=PLHBCinpJDX3yBb4nJNxoMeWN5pous2Mp5&index=2
-Note also watch this: https://www.youtube.com/watch?v=x_klpjAilMs
+> **Note:** Additional resources:
+> - https://www.youtube.com/watch?v=K6rSAInLrQk&list=PLHBCinpJDX3yBb4nJNxoMeWN5pous2Mp5&index=2
+> - https://www.youtube.com/watch?v=x_klpjAilMs
 
 ---
 
@@ -1426,21 +1436,22 @@ Rule example:
 
 # ✅ **Step 3 — Run Falco and identify the pod**
 
-Start Falco:
+**Note:** Falco may not be installed as a service. Use `falco -U` for monitoring.
+
+Start Falco and monitor output:
 
 ```bash
-sudo falco -o json_output=true
+# Primary method (if Falco is not installed as service)
+sudo falco -U
+
+# Alternative (if Falco is running as service)
+sudo journalctl -u falco -f
 ```
 
-(or use the DaemonSet if already installed)
-
-Watch output:
+Or run Falco with custom rules:
 
 ```bash
-sudo journalctl -u falco -f
-
-# or
-falco -U
+sudo falco -r /etc/falco/rules.d/falco_custom.yaml -U
 ```
 
 Expected alert:
@@ -1483,22 +1494,21 @@ cat /etc/falco/rules.d/falco_custom.yaml
 
 ### Step 3 — Monitor Falco logs for httpd pod modifying /etc/passwd
 
+**Note:** Falco may not be installed as a service. Use `falco -U` for monitoring.
+
 ```bash
-# Start Falco if not running
-sudo systemctl start falco
-sudo systemctl status falco
+# Primary method: Run Falco directly with custom rules
+sudo falco -r /etc/falco/rules.d/falco_custom.yaml -U | grep -i "httpd\|/etc/passwd"
 
-# Monitor Falco logs
+# Alternative (if Falco is running as service)
 sudo journalctl -u falco -f | grep -i "httpd\|/etc/passwd"
-
-# or
-falco -U | grep -i "httpd\|/etc/passwd"
 ```
 
-Or run Falco directly:
+If Falco service exists but is not running:
 
 ```bash
-sudo falco -r /etc/falco/rules.d/falco_custom.yaml
+sudo systemctl start falco
+sudo systemctl status falco
 ```
 
 ### Step 4 — Identify the pod from Falco output
@@ -1550,40 +1560,46 @@ Save the file.
 
 ### Step 2 — Restart Falco to apply changes
 
+**Note:** Falco may not be installed as a service. If running directly, stop with Ctrl+C and restart.
+
+If Falco is running as service:
+
 ```bash
 sudo systemctl restart falco
 ```
 
-Or if running directly:
+If running Falco directly:
 
 ```bash
 # Stop current Falco process (Ctrl+C)
 # Restart with updated rules
-sudo falco -r /etc/falco/rules.d/falco_custom.yaml
+sudo falco -r /etc/falco/rules.d/falco_custom.yaml -U
 ```
 
 ### Step 3 — Monitor Falco logs for nginx pod
 
+**Note:** Use `falco -U` for monitoring if Falco is not installed as a service.
+
 ```bash
+# Primary method: Run Falco directly with custom rules
+sudo falco -r /etc/falco/rules.d/falco_custom.yaml -U | grep -i "nginx\|package"
+
+# Alternative (if Falco is running as service)
 sudo journalctl -u falco -f | grep -i "nginx\|package"
-```
-
-Or run Falco and filter:
-
-```bash
-sudo falco -r /etc/falco/rules.d/falco_custom.yaml | grep -i nginx
 ```
 
 ### Step 4 — Collect logs for at least 20 seconds
 
 From `cks7262-node1`:
 
-```bash
-# Collect logs for 20 seconds
-sudo timeout 20s journalctl -u falco -f > /tmp/falco.log
+**Note:** Use `falco -U` if Falco is not installed as a service.
 
-# Or using Falco directly
-sudo timeout 20s falco -r /etc/falco/rules.d/falco_custom.yaml > /tmp/falco.log
+```bash
+# Primary method: Run Falco directly (if not installed as service)
+sudo timeout 20s falco -r /etc/falco/rules.d/falco_custom.yaml -U > /tmp/falco.log
+
+# Alternative (if Falco is running as service)
+sudo timeout 20s journalctl -u falco -f > /tmp/falco.log
 ```
 
 ### Step 5 — Copy logs to cks7262
@@ -1601,7 +1617,10 @@ scp /tmp/falco.log cks7262:/opt/course/2/falco.log
 Alternatively, if you have direct access from cks7262-node1 to the path:
 
 ```bash
-# From cks7262-node1
+# From cks7262-node1 (using falco -U)
+sudo timeout 20s falco -r /etc/falco/rules.d/falco_custom.yaml -U | ssh cks7262 "cat > /opt/course/2/falco.log"
+
+# Or if Falco is running as service
 sudo timeout 20s journalctl -u falco -f | ssh cks7262 "cat > /opt/course/2/falco.log"
 ```
 
@@ -1649,13 +1668,17 @@ cat /etc/falco/rules.d/falco_custom.yaml
 # Edit rules
 sudo vim /etc/falco/rules.d/falco_custom.yaml
 
-# Restart Falco
-sudo systemctl restart falco
+# Run Falco directly (primary method - if not installed as service)
+sudo falco -r /etc/falco/rules.d/falco_custom.yaml -U
 
-# Monitor Falco logs
+# Monitor Falco logs (if running as service)
+sudo systemctl restart falco
 sudo journalctl -u falco -f
 
-# Collect logs for 20 seconds
+# Collect logs for 20 seconds (primary method)
+sudo timeout 20s falco -r /etc/falco/rules.d/falco_custom.yaml -U > /tmp/falco.log
+
+# Collect logs for 20 seconds (if running as service)
 sudo timeout 20s journalctl -u falco -f > /tmp/falco.log
 
 # Copy to master node
@@ -1731,17 +1754,6 @@ docker pull alpine:3.18
 Run:
 
 ```bash
-bom generate --format json --image alpine:3.14 | grep -i libproc_ar
-bom generate --format json --image alpine:3.16 | grep -i libproc_ar
-bom generate --format json --image alpine:3.18 | grep -i libproc_ar
-```
-
-```bash
-trivy image --format cyclonedx --output result.cdx alpine:3.14
-
-```
-
-```bash
 bom alpine:3.14 | grep -i libproc_ar
 bom alpine:3.16 | grep -i libproc_ar
 bom alpine:3.18 | grep -i libproc_ar
@@ -1805,9 +1817,10 @@ syft alpine:3.16 -o spdx-json > spdx.json
 ---
 
 ### Solution:
-https://istio.io/latest/docs/tasks/security/authentication/mtls-migration/
 
-https://istio.io/latest/docs/reference/config/analysis/ist0102/
+**Reference:**
+- https://istio.io/latest/docs/tasks/security/authentication/mtls-migration/
+- https://istio.io/latest/docs/reference/config/analysis/ist0102/
 
 ```bash
 kubectl label namespace <namespace-name> istio-injection=enabled
