@@ -10,6 +10,18 @@
 ---
 ### Solution:
 
+https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-reconfigure/
+https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-reconfigure/#reflecting-the-kubelet-changes
+```bash
+kubectl get cm -n kube-system kubelet-config
+kubectl edit cm -n kube-system kubelet-config
+
+kubeadm upgrade node phase kubelet-config
+
+sudo systemctl daemon-reload 
+sudo systemctl restart kubelet
+```
+
 #### 🧱 Step 1 — Kubelet: Disable Anonymous Users & Enable Webhook Auth
 
 1. Edit the Kubelet config file:
@@ -217,6 +229,11 @@ That means anonymous-auth is disabled.
 
 ### Solution:
 
+```bash
+kube-linter lint pod.yaml
+kubesec scan  pod.yaml
+```
+
 # **✔️ Part 1 — Fix the Dockerfile**
 
 ### 🔧 **Before (root user)**
@@ -412,6 +429,9 @@ spec:
 ---
 
 ### Solution:
+https://kubernetes.io/docs/concepts/storage/projected-volumes/#serviceaccounttoken
+
+NOTE: `mountPath` ONLY THE DIR NAME THE FOLDER NAME IS `path`
 ## **Step 1 — Create the ServiceAccount**
 
 ```bash
@@ -503,7 +523,7 @@ spec:
         projected:
           sources:
           - serviceAccountToken:
-              path: token
+              path: token  # DIR NAME
               audience: api
               expirationSeconds: 3600
 
@@ -512,7 +532,7 @@ spec:
         image: nginx
         volumeMounts:
         - name: token-vol
-          mountPath: /var/run/secrets/tokens
+          mountPath: /var/run/secrets/tokens  # PARENT DIR
           readOnly: true
 ```
 
@@ -740,6 +760,7 @@ Meaning:
 
 ### Solution:
 
+Note: Pod with two container
 
 ## **Step 1 — Inspect namespace**
 
@@ -839,6 +860,7 @@ spec:
    * **All namespaces:** delete on ConfigMaps & Secrets → **RequestResponse body**
    * Everything else → **Metadata**
 
+https://kubernetes.io/docs/tasks/debug/debug-cluster/audit/
 ---
 
 ### Solution:
@@ -1317,16 +1339,38 @@ sudo journalctl -u kubelet -f
 
 ## Question 14
 
+> **Part 1:**
+>
+> You have **three Deployments** of Ollama in your cluster. All three Deployments have pods with `SecurityContext: privileged=true`.
+>
+> You must determine **which pod writes to `/dev/mem`**.
+>
+> Identify the offending pod and mention **Falco** as the recommended tool for this detection.
+>
+> ---
+>
+> **Part 2:**
+>
+> Solve this question on: `ssh cks7262`
+>
+> Falco is installed on worker node `cks7262-node1`. Connect using `ssh cks7262-node1` from `cks7262`. There is a file `/etc/falco/rules.d/falco_custom.yaml` with rules that help you to:
+>
+> 1. Find a Pod running image `httpd` which modifies `/etc/passwd`.
+>
+>    Scale the Deployment that controls that Pod down to 0.
+>
+> 2. Find a Pod running image `nginx` which triggers rule "Package management process launched".
+>
+>    Change the rule log text after "Package management process launched" to only include:
+>
+>    `time-with-nanoseconds, container-id, container-name, user-name`
+>
+>    Collect the logs for at least 20 seconds and save them under `/opt/course/2/falco.log` on `cks7262`.
+>
+>    Scale the Deployment that controls that Pod down to 0.
 
-You have *three Deployments* of Ollama.
-You must determine **which pod writes to `/dev/mem`**.
-All have:
-
-```
-SecurityContext: privileged=true
-```
-
-You must identify the offending pod and mention **Falco** as the recommended tool.
+Note: also watch this : https://www.youtube.com/watch?v=K6rSAInLrQk&list=PLHBCinpJDX3yBb4nJNxoMeWN5pous2Mp5&index=2
+Note also watch this: https://www.youtube.com/watch?v=x_klpjAilMs
 
 ---
 
@@ -1374,7 +1418,7 @@ Rule example:
 - rule: Write to dev mem
   desc: Detect any write attempt to /dev/mem
   condition: evt.type=write and fd.name=/dev/mem
-  output: "Write to /dev/mem detected (user=%user.name pod=%k8s.pod.name container=%container.name)"
+  output: "Write to /dev/mem detected (user=%user.name pod=%k8s.pod.name container=%container.name)"  # add namesapce and pod name
   priority: CRITICAL
 ```
 
@@ -1394,6 +1438,9 @@ Watch output:
 
 ```bash
 sudo journalctl -u falco -f
+
+# or
+falco -U
 ```
 
 Expected alert:
@@ -1415,6 +1462,210 @@ This gives you:
 **The pod that wrote to `/dev/mem` is the one Falco reported in the alert stream.**
 
 Falco is the **correct Kubernetes runtime security tool** to detect writes to kernel memory devices such as `/dev/mem`.
+
+---
+
+# ✅ **Part 2 Solution — Falco Tasks on cks7262-node1**
+
+## **Task 1: Find httpd Pod Modifying /etc/passwd**
+
+### Step 1 — Connect to the worker node
+
+```bash
+ssh cks7262-node1
+```
+
+### Step 2 — Check Falco custom rules
+
+```bash
+cat /etc/falco/rules.d/falco_custom.yaml
+```
+
+### Step 3 — Monitor Falco logs for httpd pod modifying /etc/passwd
+
+```bash
+# Start Falco if not running
+sudo systemctl start falco
+sudo systemctl status falco
+
+# Monitor Falco logs
+sudo journalctl -u falco -f | grep -i "httpd\|/etc/passwd"
+
+# or
+falco -U | grep -i "httpd\|/etc/passwd"
+```
+
+Or run Falco directly:
+
+```bash
+sudo falco -r /etc/falco/rules.d/falco_custom.yaml
+```
+
+### Step 4 — Identify the pod from Falco output
+
+Look for alerts like:
+
+```
+Pod running image httpd modified /etc/passwd (pod=httpd-deploy-xxx container=httpd namespace=default)
+```
+
+Note the pod name and namespace.
+
+### Step 5 — Find the Deployment and scale it down
+
+```bash
+# From cks7262 (master node)
+kubectl get pod <pod-name> -n <namespace> -o jsonpath='{.metadata.ownerReferences[0].name}'
+
+# Get the Deployment name
+kubectl get deploy -n <namespace> | grep httpd
+
+# Scale down to 0
+kubectl scale deploy <deployment-name> -n <namespace> --replicas=0
+```
+
+---
+
+## **Task 2: Find nginx Pod Triggering "Package management process launched"**
+
+### Step 1 — Modify the Falco rule log format
+
+Edit the custom rules file:
+
+```bash
+sudo vim /etc/falco/rules.d/falco_custom.yaml
+```
+
+Find the rule "Package management process launched" and modify the `output` field to only include:
+
+```yaml
+- rule: Package management process launched
+  desc: Detect package management processes
+  condition: package_mgmt_procs
+  output: "%evt.time.s, %container.id, %container.name, %user.name"
+  priority: WARNING
+```
+
+Save the file.
+
+### Step 2 — Restart Falco to apply changes
+
+```bash
+sudo systemctl restart falco
+```
+
+Or if running directly:
+
+```bash
+# Stop current Falco process (Ctrl+C)
+# Restart with updated rules
+sudo falco -r /etc/falco/rules.d/falco_custom.yaml
+```
+
+### Step 3 — Monitor Falco logs for nginx pod
+
+```bash
+sudo journalctl -u falco -f | grep -i "nginx\|package"
+```
+
+Or run Falco and filter:
+
+```bash
+sudo falco -r /etc/falco/rules.d/falco_custom.yaml | grep -i nginx
+```
+
+### Step 4 — Collect logs for at least 20 seconds
+
+From `cks7262-node1`:
+
+```bash
+# Collect logs for 20 seconds
+sudo timeout 20s journalctl -u falco -f > /tmp/falco.log
+
+# Or using Falco directly
+sudo timeout 20s falco -r /etc/falco/rules.d/falco_custom.yaml > /tmp/falco.log
+```
+
+### Step 5 — Copy logs to cks7262
+
+```bash
+# From cks7262-node1, copy to cks7262
+scp /tmp/falco.log cks7262:/opt/course/2/falco.log
+
+# Or if you're already on cks7262-node1, you can use:
+# Make sure the directory exists on cks7262 first
+ssh cks7262 "mkdir -p /opt/course/2"
+scp /tmp/falco.log cks7262:/opt/course/2/falco.log
+```
+
+Alternatively, if you have direct access from cks7262-node1 to the path:
+
+```bash
+# From cks7262-node1
+sudo timeout 20s journalctl -u falco -f | ssh cks7262 "cat > /opt/course/2/falco.log"
+```
+
+### Step 6 — Identify the nginx pod and scale down
+
+From `cks7262`:
+
+```bash
+# Find nginx pods
+kubectl get pods -A | grep nginx
+
+# Get the Deployment name
+kubectl get pod <nginx-pod-name> -n <namespace> -o jsonpath='{.metadata.ownerReferences[0].name}'
+
+# Scale down to 0
+kubectl scale deploy <deployment-name> -n <namespace> --replicas=0
+```
+
+### Step 7 — Verify the log file format
+
+```bash
+# On cks7262
+cat /opt/course/2/falco.log
+```
+
+The log should contain entries in the format:
+
+```
+2024-01-15T10:30:45.123456789, abc123def456, nginx-container, root
+```
+
+Each line should have: `time-with-nanoseconds, container-id, container-name, user-name`
+
+---
+
+## **Quick Reference Commands**
+
+```bash
+# Connect to worker node
+ssh cks7262-node1
+
+# View custom rules
+cat /etc/falco/rules.d/falco_custom.yaml
+
+# Edit rules
+sudo vim /etc/falco/rules.d/falco_custom.yaml
+
+# Restart Falco
+sudo systemctl restart falco
+
+# Monitor Falco logs
+sudo journalctl -u falco -f
+
+# Collect logs for 20 seconds
+sudo timeout 20s journalctl -u falco -f > /tmp/falco.log
+
+# Copy to master node
+scp /tmp/falco.log cks7262:/opt/course/2/falco.log
+
+# Find and scale deployments
+kubectl get pods -A | grep httpd
+kubectl get pods -A | grep nginx
+kubectl scale deploy <name> -n <namespace> --replicas=0
+```
 
 ---
 
@@ -1480,6 +1731,17 @@ docker pull alpine:3.18
 Run:
 
 ```bash
+bom generate --format json --image alpine:3.14 | grep -i libproc_ar
+bom generate --format json --image alpine:3.16 | grep -i libproc_ar
+bom generate --format json --image alpine:3.18 | grep -i libproc_ar
+```
+
+```bash
+trivy image --format cyclonedx --output result.cdx alpine:3.14
+
+```
+
+```bash
 bom alpine:3.14 | grep -i libproc_ar
 bom alpine:3.16 | grep -i libproc_ar
 bom alpine:3.18 | grep -i libproc_ar
@@ -1532,3 +1794,38 @@ syft alpine:3.16 -o spdx-json > spdx.json
 ```
 
 ---
+
+## Question 16
+
+> Configure Istio service mesh to enforce **mutual TLS (mTLS)** for a specific workload in namespace `my-namespace`.
+>
+> 1. Enable Istio sidecar injection for the namespace `my-namespace`.
+> 2. Create a **PeerAuthentication** resource named `workload-mtls` in namespace `my-namespace` that enforces **STRICT** mTLS mode for pods with label `app: my-app`.
+
+---
+
+### Solution:
+https://istio.io/latest/docs/tasks/security/authentication/mtls-migration/
+
+https://istio.io/latest/docs/reference/config/analysis/ist0102/
+
+```bash
+kubectl label namespace <namespace-name> istio-injection=enabled
+```
+
+Pod-Level mTLS Enforcement Example
+
+```yaml
+
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: workload-mtls
+  namespace: my-namespace
+spec:
+  selector:
+    matchLabels:
+      app: my-app
+  mtls:
+    mode: STRICT
+```
