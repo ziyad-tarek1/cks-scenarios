@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+# CKS practice lab driver.
+#
+#   ./cks setup [NN...]     build the cluster and seed question(s)
+#   ./cks verify [NN...]    grade your solution the way the exam would
+#   ./cks reset  NN...      re-seed question(s), discarding your work
+#   ./cks solve  NN...      apply the reference solution (to study / compare)
+#   ./cks task   NN         re-print the task statement
+#   ./cks list              list questions and their status
+#   ./cks doctor            diagnose a wedged cluster
+#   ./cks clean             delete the whole lab cluster + work dir
+set -u
+
+LAB_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$LAB_ROOT/lib/common.sh"
+
+ALL_Q=(01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16)
+
+usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+qfile() { printf '%s/questions/q%s.sh' "$LAB_ROOT" "$1"; }
+
+# Normalise "3" / "03" / "q3" -> "03"
+norm_q() {
+  local q="${1#q}"; q="${q#Q}"
+  q=$(printf '%02d' "$((10#${q:-0}))" 2>/dev/null) || return 1
+  [ -f "$(qfile "$q")" ] || return 1
+  printf '%s' "$q"
+}
+
+expand_args() {
+  local out a n
+  out=""
+  if [ "$#" -eq 0 ]; then printf '%s\n' "${ALL_Q[@]}"; return; fi
+  for a in "$@"; do
+    n=$(norm_q "$a") || die "no such question: '$a' (expected 1-16)"
+    out="$out$n
+"
+  done
+  printf '%s' "$out"
+}
+
+# bash 3.2 has no mapfile; fill the global QS array instead.
+QS=()
+collect_q() {
+  local line
+  QS=()
+  while IFS= read -r line; do
+    [ -n "$line" ] && QS[${#QS[@]}]="$line"
+  done < <(expand_args "$@")
+  [ "${#QS[@]}" -gt 0 ] || die "no questions selected"
+}
+
+# Run one lifecycle hook of one question in a subshell so questions can't
+# leak state (or a stray 'exit') into each other.
+run_hook() { # qnum hook
+  local q="$1" hook="$2"
+  ( set -u
+    source "$LAB_ROOT/lib/common.sh"
+    CURRENT_Q="$q"
+    source "$(qfile "$q")"
+    if ! declare -F "$hook" >/dev/null; then
+      case "$hook" in
+        q_solve) warn "q$q has no reference solution"; exit 0 ;;
+        q_reset) q_setup; exit $? ;;
+        *) die "q$q does not implement $hook" ;;
+      esac
+    fi
+    "$hook"
+  )
+}
+
+q_title() { ( source "$(qfile "$1")"; printf '%s' "${Q_TITLE:-?}" ); }
+q_tags()  { ( source "$(qfile "$1")"; printf '%s' "${Q_TAGS:-}" ); }
+
+# ---------------------------------------------------------------- cluster
+
+ensure_cluster() {
+  require_docker
+  need_bin kind "Install with: brew install kind"
+  need_bin kubectl "Install with: brew install kubectl"
+  if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
+    step "cluster '$CLUSTER' already exists"
+  else
+    info "Creating kind cluster '$CLUSTER' (kubeadm: real static pods, etcd, kubelet config)"
+    local cfg="$LAB_ROOT/kind.yaml"
+    # bash 3.2 (macOS) errors on empty-array expansion under `set -u`, so branch.
+    if [ -n "$NODE_IMAGE" ]; then
+      kind create cluster --name "$CLUSTER" --config "$cfg" --wait 180s --image "$NODE_IMAGE" \
+        || die "kind create cluster failed"
+    else
+      kind create cluster --name "$CLUSTER" --config "$cfg" --wait 180s \
+        || die "kind create cluster failed"
+    fi
+  fi
+  k cluster-info >/dev/null 2>&1 || die "cluster is not responding"
+  backup_controlplane
+  mkdir -p "$LAB"
+}
+
+cmd_setup() {
+  collect_q "$@"
+  ensure_cluster
+  unwedge_controlplane
+  for q in "${QS[@]}"; do
+    hdr "Setting up q$q — $(q_title "$q")"
+    run_hook "$q" q_setup || warn "q$q setup reported a problem"
+  done
+  hdr "Ready."
+  printf '  Work dir : %s\n' "$LAB"
+  printf '  Context  : %s   (all lab kubectl calls are pinned to this)\n' "$KCTX"
+  printf '  Node      : docker exec -it %s bash\n' "$NODE"
+  printf '\n  Grade yourself:  ./cks verify        (or ./cks verify 8)\n'
+  printf '  Task text     :  ./cks task 8\n\n'
+}
+
+cmd_verify() {
+  collect_q "$@"
+  require_cluster
+  unwedge_controlplane
+  local tp=0 tf=0 rc=0
+  for q in "${QS[@]}"; do
+    hdr "q$q — $(q_title "$q")"
+    local out
+    out=$(run_hook "$q" q_verify 2>&1); rc=$?
+    printf '%s\n' "$out"
+    # tally from the subshell's printed result line
+    local p f
+    p=$(printf '%s' "$out" | grep -c 'PASS ' || true)
+    f=$(printf '%s' "$out" | grep -c 'FAIL ' || true)
+    tp=$((tp+p)); tf=$((tf+f))
+  done
+  if [ "${#QS[@]}" -gt 1 ]; then
+    hdr "TOTAL"
+    if [ "$tf" -eq 0 ]; then
+      printf '  %s\n\n' "${C_G}${C_BD}ALL PASS — ${tp} criteria met${C_0}"
+    else
+      printf '  %s\n\n' "${C_R}${C_BD}${tf} criteria failed${C_0} (${tp} passed)"
+    fi
+  fi
+  [ "$tf" -eq 0 ]
+}
+
+cmd_reset() {
+  [ "$#" -gt 0 ] || die "reset needs a question number (or use './cks clean' for everything)"
+  collect_q "$@"
+  require_cluster
+  for q in "${QS[@]}"; do
+    hdr "Resetting q$q — $(q_title "$q")"
+    run_hook "$q" q_reset || warn "q$q reset reported a problem"
+  done
+  info "Done. Your previous work on these questions is gone."
+}
+
+cmd_solve() {
+  [ "$#" -gt 0 ] || die "solve needs a question number"
+  collect_q "$@"
+  require_cluster
+  for q in "${QS[@]}"; do
+    hdr "Applying reference solution for q$q — $(q_title "$q")"
+    run_hook "$q" q_solve || warn "q$q solve reported a problem"
+  done
+  info "Now run:  ./cks verify ${QS[*]}"
+}
+
+cmd_task() {
+  [ "$#" -gt 0 ] || die "task needs a question number"
+  for a in "$@"; do
+    local q; q=$(norm_q "$a") || die "no such question: $a"
+    local f="$LAB/q$q/TASK.md"
+    hdr "q$q — $(q_title "$q")"
+    if [ -f "$f" ]; then cat "$f"; else
+      warn "not set up yet — run: ./cks setup $q"
+    fi
+  done
+}
+
+cmd_list() {
+  local have=no
+  kind get clusters 2>/dev/null | grep -qx "$CLUSTER" && have=yes
+  printf '\n  %-4s %-8s %s\n' "Q" "SEEDED" "TITLE"
+  printf '  %s\n' "-------------------------------------------------------------------------"
+  for q in "${ALL_Q[@]}"; do
+    local s="-"
+    [ -d "$LAB/q$q" ] && s="yes"
+    printf '  %-4s %-8s %s\n' "$q" "$s" "$(q_title "$q")"
+  done
+  printf '\n  cluster "%s": %s     work dir: %s\n\n' "$CLUSTER" "$have" "$LAB"
+  printf '  %s\n' "${C_D}Tags: cluster=needs the kind cluster  ingress/istio=installs an add-on${C_0}"
+  printf '  %s\n\n' "${C_D}      files=you edit files under the work dir  host=runs outside the cluster${C_0}"
+}
+
+cmd_doctor() {
+  require_docker
+  hdr "Cluster"
+  kind get clusters 2>/dev/null | sed 's/^/  /'
+  hdr "Nodes"
+  k get nodes 2>&1 | sed 's/^/  /'
+  hdr "Control-plane pods"
+  k -n kube-system get po 2>&1 | grep -E 'NAME|apiserver|etcd|controller-manager|scheduler' | sed 's/^/  /'
+  hdr "API server health"
+  if k get --raw /healthz >/dev/null 2>&1; then
+    printf '  healthz: ok\n'
+  else
+    printf '  %s\n' "${C_R}healthz: UNREACHABLE${C_0}"
+    hdr "kube-apiserver container log (last 20 lines)"
+    node_sh 'id=$(crictl ps -a --name kube-apiserver -q | head -1)
+             if [ -n "$id" ]; then crictl logs "$id" 2>&1 | tail -20
+             else echo "(no kube-apiserver container exists - the kubelet rejected the manifest)"
+                  journalctl -u kubelet --no-pager -n 300 2>/dev/null | grep -m3 "Could not process manifest file" || true
+             fi' | sed 's/^/  /'
+    hdr "Recover"
+    printf '  Restore the known-good manifests:   ./cks restore\n'
+  fi
+  unwedge_controlplane
+}
+
+cmd_restore() {
+  require_docker
+  info "Restoring control-plane manifests + kubelet config from the in-node backup"
+  restore_controlplane
+  unwedge_controlplane
+  k get nodes 2>&1 | sed 's/^/  /'
+}
+
+cmd_clean() {
+  require_docker
+  local keep_files=no
+  [ "${1:-}" = "--keep-files" ] && keep_files=yes
+  if kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
+    info "Deleting kind cluster '$CLUSTER'"
+    kind delete cluster --name "$CLUSTER"
+  else
+    step "no cluster '$CLUSTER' to delete"
+  fi
+  # q10 runs a side container; q14/q15 may leave helper containers behind.
+  for c in cks-dockerhost; do
+    docker rm -f "$c" >/dev/null 2>&1 && step "removed container $c"
+  done
+  if [ "$keep_files" = yes ]; then
+    step "keeping work dir $LAB"
+  elif [ -d "$LAB" ]; then
+    info "Removing work dir $LAB"
+    rm -rf "$LAB"
+  fi
+  info "Clean. Start over with:  ./cks setup"
+}
+
+# ---------------------------------------------------------------- main
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  setup)   cmd_setup   "$@" ;;
+  verify|check|grade) cmd_verify "$@" ;;
+  reset)   cmd_reset   "$@" ;;
+  solve)   cmd_solve   "$@" ;;
+  task)    cmd_task    "$@" ;;
+  list|ls) cmd_list    "$@" ;;
+  doctor)  cmd_doctor  "$@" ;;
+  restore) cmd_restore "$@" ;;
+  clean|destroy) cmd_clean "$@" ;;
+  ""|-h|--help|help) usage 0 ;;
+  *) printf 'unknown command: %s\n\n' "$cmd" >&2; usage 1 ;;
+esac
