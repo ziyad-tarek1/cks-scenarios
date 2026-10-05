@@ -1,14 +1,5 @@
 #!/usr/bin/env bash
-# CKS practice lab driver.
-#
-#   ./cks setup [NN...]     build the cluster and seed question(s)
-#   ./cks verify [NN...]    grade your solution the way the exam would
-#   ./cks reset  NN...      re-seed question(s), discarding your work
-#   ./cks solve  NN...      apply the reference solution (to study / compare)
-#   ./cks task   NN         re-print the task statement
-#   ./cks list              list questions and their status
-#   ./cks doctor            diagnose a wedged cluster
-#   ./cks clean             delete the whole lab cluster + work dir
+# CKS practice lab driver.  See README.md for a step-by-step guide.
 set -u
 
 LAB_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,7 +7,31 @@ source "$LAB_ROOT/lib/common.sh"
 
 ALL_Q=(01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16)
 
-usage() { sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() {
+  cat <<'USAGE'
+CKS practice lab driver.
+
+  ./cks setup  [N...]    build the cluster and seed question(s); no args = all 16
+  ./cks task   N         print a question's task statement
+  ./cks verify [N...]    grade your solution the way the exam would; no args = all 16
+  ./cks reset  N...      re-seed question(s), discarding your work on them
+  ./cks solve  N...      apply the reference solution (to study / compare)
+
+  ./cks list             list all questions and which are seeded
+  ./cks doctor           diagnose a broken cluster
+  ./cks restore          put the control plane back to known-good
+  ./cks clean            delete the lab cluster and the work dir
+  ./cks clean --keep-files   delete the cluster, keep your working files
+
+N accepts 1, 01 or q1. Aliases: check/grade = verify, ls = list, destroy = clean.
+
+Environment:
+  CKS_LAB_DIR     where your working files go      (default ~/cks-lab)
+  CKS_CLUSTER     kind cluster name                (default cks)
+  CKS_NODE_IMAGE  pin the Kubernetes version, e.g. kindest/node:v1.34.0
+USAGE
+  exit "${1:-0}"
+}
 
 qfile() { printf '%s/questions/q%s.sh' "$LAB_ROOT" "$1"; }
 

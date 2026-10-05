@@ -95,15 +95,26 @@ q_verify() {
     fi
   done
 
-  # the decisive test: PSA actually admits it, and pods run
-  local ready
-  ready=$(k -n "$Q8_NS" get deploy "$Q8_DEPLOY" -o jsonpath='{.status.readyReplicas}')
-  if [ "${ready:-0}" -ge 1 ]; then
-    ok "pods are actually Running (PSA admitted them)"
+  # The decisive test: PSA actually admits the pods.
+  #
+  # Scored on ADMISSION, not on reaching Running: a loaded lab cluster can leave a
+  # perfectly compliant pod Pending or ContainerCreating for a while, and that is
+  # not the candidate's mistake. A PodSecurity rejection, on the other hand, is.
+  k -n "$Q8_NS" rollout status "deploy/$Q8_DEPLOY" --timeout=120s >/dev/null 2>&1
+  local ready podcount psaerr
+  ready=$(k -n "$Q8_NS" get deploy "$Q8_DEPLOY" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)
+  podcount=$(k -n "$Q8_NS" get po -l "app=$Q8_DEPLOY" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+  psaerr=$(k -n "$Q8_NS" describe rs -l "app=$Q8_DEPLOY" 2>/dev/null \
+            | grep -m1 'violates PodSecurity' | sed 's/^[[:space:]]*//')
+  if [ -n "$psaerr" ]; then
+    no "PSA admits the pods" "$psaerr"
+  elif [ "${podcount:-0}" -ge 1 ]; then
+    ok "PSA admits the pods (pods created, no PodSecurity rejection)"
+    if [ "${ready:-0}" -lt 1 ]; then
+      warn "pods admitted but not Ready yet (scheduling / image pull) - does not affect your score"
+    fi
   else
-    local ev
-    ev=$(k -n "$Q8_NS" describe rs -l "app=$Q8_DEPLOY" 2>/dev/null | grep -m1 'violates PodSecurity' | sed 's/^[[:space:]]*//')
-    no "pods are actually Running (PSA admitted them)" "${ev:-no pods yet; kubectl -n $Q8_NS describe rs}"
+    no "PSA admits the pods" "no pods created at all; kubectl -n $Q8_NS describe rs"
   fi
 
   # server-side dry-run as an independent confirmation
