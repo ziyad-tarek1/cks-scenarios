@@ -10,10 +10,24 @@ q_setup() {
   backup_controlplane
   step "clearing any existing ImagePolicyWebhook configuration"
   mark_apiserver
-  apiserver_edit_multi \
-    "rmflag --admission-control-config-file" \
-    "setflag --enable-admission-plugins NodeRestriction" \
-    "rmvol imagepolicy"
+  # Remove ONLY ImagePolicyWebhook from the plugin list and keep whatever else is
+  # there. Previously this reset the list to "NodeRestriction", which silently
+  # undid q01's un-hardening (q01 removes the flag entirely) -- so after a full
+  # `./cks setup`, q01 looked partly solved before you had touched anything.
+  local cur rest
+  cur=$(apiserver_flag --enable-admission-plugins)
+  rest=$(printf '%s' "$cur" | tr ',' '\n' | grep -v '^ImagePolicyWebhook$' | grep -v '^$' | paste -sd, -)
+  if [ -n "$rest" ]; then
+    apiserver_edit_multi \
+      "rmflag --admission-control-config-file" \
+      "setflag --enable-admission-plugins $rest" \
+      "rmvol imagepolicy"
+  else
+    apiserver_edit_multi \
+      "rmflag --admission-control-config-file --enable-admission-plugins" \
+      "rmvol imagepolicy"
+  fi
+  printf '%s' "$rest" > "$d/.baseline_plugins"
   node_sh "mkdir -p $Q13_DIR" >/dev/null 2>&1
   settle_apiserver 60 || true
 
@@ -99,8 +113,24 @@ q_verify() {
   acf=$(apiserver_flag --admission-control-config-file)
   csv_has "$plugins" ImagePolicyWebhook && ok "--enable-admission-plugins includes ImagePolicyWebhook" \
     || no "--enable-admission-plugins includes ImagePolicyWebhook" "got '${plugins:-<unset>}'"
-  csv_has "$plugins" NodeRestriction && ok "NodeRestriction kept in --enable-admission-plugins" \
-    || no "NodeRestriction kept in --enable-admission-plugins" "append to the existing flag, don't replace it"
+  # Enforce "append, don't replace" against whatever the flag held when this
+  # question was seeded -- which depends on whether q01 is also set up.
+  local base missing pl
+  base=$(cat "$LAB/q13/.baseline_plugins" 2>/dev/null)
+  if [ -z "$base" ]; then
+    ok "no pre-existing admission plugins to preserve"
+  else
+    missing=""
+    for pl in $(printf '%s' "$base" | tr ',' ' '); do
+      csv_has "$plugins" "$pl" || missing="$missing $pl"
+    done
+    if [ -z "$missing" ]; then
+      ok "pre-existing admission plugins preserved ($base)"
+    else
+      no "pre-existing admission plugins preserved ($base)" \
+         "lost:$missing -- append to the existing flag, don't replace it"
+    fi
+  fi
   [ "$acf" = "$Q13_CFG" ] && ok "--admission-control-config-file=$Q13_CFG" \
     || no "--admission-control-config-file=$Q13_CFG" "got '${acf:-<unset>}'"
   apiserver_mounts "$Q13_DIR" && ok "volumeMount for $Q13_DIR present" \
@@ -180,8 +210,16 @@ EOF
   mark_apiserver
   node_sh "sed -i 's|server: .*|server: $Q13_SERVER|' $Q13_KUBECONF" >/dev/null 2>&1
   mark_apiserver
+  local cur want
+  cur=$(apiserver_flag --enable-admission-plugins)
+  if [ -n "$cur" ]; then
+    printf '%s' "$cur" | tr ',' '\n' | grep -qx ImagePolicyWebhook \
+      && want="$cur" || want="$cur,ImagePolicyWebhook"
+  else
+    want="ImagePolicyWebhook"
+  fi
   apiserver_edit_multi \
-    "setflag --enable-admission-plugins NodeRestriction,ImagePolicyWebhook" \
+    "setflag --enable-admission-plugins $want" \
     "setflag --admission-control-config-file $Q13_CFG" \
     "addvol imagepolicy $Q13_DIR $Q13_DIR true"
   settle_apiserver 60 || true

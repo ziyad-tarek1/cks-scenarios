@@ -92,9 +92,11 @@ settle_apiserver() {
     fi
     sleep 2
   done
-  # No replacement seen. Either nothing changed, or the kubelet has not noticed.
+  # No replacement seen within the window. If the API is healthy this is usually
+  # benign (the kubelet applied the edit before we started watching, or the edit
+  # was a no-op), so report it quietly rather than as a warning.
   if wait_apiserver 5; then
-    warn "kube-apiserver was NOT restarted (container unchanged) -- the manifest edit may not have been picked up yet"
+    step "kube-apiserver container unchanged (edit already applied, or a no-op)"
     return 0
   fi
   warn "API server did not come back. Diagnose with:  ./cks doctor"
@@ -285,4 +287,47 @@ apiserver_edit_multi() {
   fi
   rm -f "$tmp"
   return $rc
+}
+
+# Wait for everything the lab just seeded to actually be Running, so `setup`
+# does not say "Ready." while images are still pulling.
+settle_workloads() {
+  local i n
+  step "waiting for seeded workloads to settle ..."
+  for i in $(seq 1 60); do
+    n=$(k get po -A --no-headers 2>/dev/null | grep -vcE 'Running|Completed' | tr -d ' ')
+    if [ "${n:-1}" = "0" ]; then step "all pods Running"; return 0; fi
+    sleep 5
+  done
+  warn "${n:-?} pod(s) still not Running after 5 min:"
+  k get po -A --no-headers 2>/dev/null | grep -vE 'Running|Completed' | head -5 | sed 's/^/        /'
+  warn "usually just slow image pulls -- give it a minute, then ./cks verify"
+  return 0
+}
+
+# Wait until the control plane is not just reachable but STABLE.
+#
+# Seeding churns it: q01 rewrites the etcd manifest and the apiserver flags, which
+# recreates those static pods, and the API server can flap for a minute or two while
+# 24 pods start at once. "Reachable" is therefore not the same as "ready", so this
+# also requires the kube-apiserver container to survive a quiet window without being
+# replaced.
+settle_controlplane() {
+  local i id prev quiet=0
+  step "waiting for the control plane to stabilise ..."
+  wait_apiserver 60 || { warn "API server unreachable; try ./cks doctor"; return 1; }
+  prev=$(apiserver_container_id)
+  for ((i=0;i<30;i++)); do
+    sleep 5
+    id=$(apiserver_container_id)
+    if [ -n "$id" ] && [ "$id" = "$prev" ] && k get --raw /readyz >/dev/null 2>&1; then
+      quiet=$((quiet+1))
+      [ "$quiet" -ge 4 ] && { step "control plane stable"; return 0; }
+    else
+      quiet=0; prev="$id"
+      wait_apiserver 30 >/dev/null 2>&1 || true
+    fi
+  done
+  warn "control plane is still settling; give it a minute, then ./cks doctor"
+  return 0
 }

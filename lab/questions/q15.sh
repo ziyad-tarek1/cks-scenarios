@@ -42,17 +42,28 @@ q_setup() {
     command: [\"sh\",\"-c\",\"sleep 86400\"]"
     i=$((i+1))
   done
-  k apply -f - >/dev/null <<EOF
-apiVersion: v1
+  # Don't swallow the apply: if the API server is mid-restart (q01 rewrites the
+  # etcd manifest during setup, which churns the control plane) this silently
+  # failed and left the question with no pod at all.
+  local manifest attempt rc
+  manifest="apiVersion: v1
 kind: Pod
 metadata:
   name: $Q15_POD
   namespace: $Q15_NS
 spec:
-  containers:$containers
-EOF
-  k -n "$Q15_NS" wait --for=condition=Ready "pod/$Q15_POD" --timeout=300s >/dev/null 2>&1 \
-    || warn "pod not Ready yet"
+  containers:$containers"
+  rc=1
+  for attempt in 1 2 3; do
+    if printf '%s\n' "$manifest" | k apply -f - >/dev/null 2>&1; then rc=0; break; fi
+    step "API server busy, retrying the Pod apply ($attempt/3) ..."
+    wait_apiserver 24 >/dev/null 2>&1 || true
+  done
+  if [ "$rc" -ne 0 ]; then
+    warn "could not create pod/$Q15_POD -- re-run: ./cks setup 15"
+  elif ! k -n "$Q15_NS" wait --for=condition=Ready "pod/$Q15_POD" --timeout=300s >/dev/null 2>&1; then
+    step "pod still pulling images; it will settle shortly"
+  fi
   mkdir -p "$d/out"
 
   cat > "$d/TASK.md" <<EOF
@@ -87,6 +98,9 @@ q_verify() {
   [ -f "$d/.target" ] || { no "question is set up" "./cks setup 15"; report; return; }
   local timg tver tnum
   timg=$(sed -n 1p "$d/.target"); tver=$(sed -n 2p "$d/.target"); tnum=$(sed -n 3p "$d/.target")
+  if ! k -n "$Q15_NS" get pod "$Q15_POD" >/dev/null 2>&1; then
+    warn "pod/$Q15_POD is missing -- run ./cks setup 15 to recreate it"
+  fi
   local spdx="$d/out/sbom.spdx.json" cdx="$d/out/report.cdx.json"
 
   # --- SPDX report ---

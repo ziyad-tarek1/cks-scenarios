@@ -13,9 +13,30 @@ ensure_ingress() {
   fi
   step "waiting for the ingress controller ..."
   unwedge_controlplane
-  k -n ingress-nginx wait --for=condition=Ready pod \
-    -l app.kubernetes.io/component=controller --timeout=300s >/dev/null 2>&1 \
-    || warn "ingress controller not Ready yet; verification may fail. Re-run ./cks setup 12"
+  # The admission Jobs must finish before the controller can go Ready, and on a
+  # brand-new cluster that races with every other image pull. Give it a real
+  # budget and re-check, rather than warning after one short wait.
+  local i
+  for i in 1 2 3; do
+    k -n ingress-nginx wait --for=condition=Ready pod \
+      -l app.kubernetes.io/component=controller --timeout=240s >/dev/null 2>&1 && break
+    unwedge_controlplane
+  done
+  # Final confirmation, polled: the Deployment can report Ready a few seconds after
+  # the wait returns, and a premature warning here is just misleading.
+  local ready=no
+  for i in $(seq 1 24); do
+    if k -n ingress-nginx get po -l app.kubernetes.io/component=controller \
+         -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null | grep -q true; then
+      ready=yes; break
+    fi
+    sleep 5
+  done
+  if [ "$ready" = yes ]; then
+    step "ingress controller ready"
+  else
+    warn "ingress controller still not Ready; re-run ./cks setup 12 before verifying"
+  fi
 }
 
 q_setup() {

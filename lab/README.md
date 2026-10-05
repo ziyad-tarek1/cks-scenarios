@@ -411,6 +411,7 @@ All reproduced against a live cluster — these are the mistakes that cost marks
 | `Cluster 'cks' is not responding` | API server mid-restart, or genuinely down | wait 30s and retry; else `./cks doctor` |
 | `Lab cluster 'cks' not found` | Never set up, or `clean`ed | `./cks setup` |
 | `kube-apiserver` pod shows `0/1 Running` | **Expected** once q02 is solved — probes are anonymous and get 401 | nothing to fix |
+| API server unreachable on and off, `ATTEMPT` climbing | q02 is solved: the kubelet kills it every ~90s because the liveness probe gets 401 | `./cks reset 2` |
 | `kube-controller-manager` `CrashLoopBackOff` | Stale leader-election lease after many apiserver restarts | cleared automatically on every command |
 | Pods stuck `Pending`, nothing will start | q13 is solved — `defaultAllow: false` with an unreachable webhook blocks **all** pod creation | `./cks reset 13` |
 | q12 verify fails on curl | Ingress controller wasn't ready yet | `./cks setup 12` again |
@@ -429,9 +430,16 @@ Still stuck? Rebuilding costs you nothing but time:
 
 ## 9. Things to know before you rely on it
 
-**Solving q13 blocks Pod creation cluster-wide.** That's the correct end state for
-the task, but nothing else can start while it holds. Run `./cks reset 13` before
-working on other questions.
+**Two solved questions deliberately damage the cluster.** Both are faithful to the
+exam, and both need resetting before you work on anything else:
+
+* **q02** — `--anonymous-auth=false` makes kubeadm's liveness probe get 401, so the
+  kubelet kills the API server every ~90 seconds, forever. The cluster becomes
+  intermittently unreachable (`Unable to connect to the server: EOF`) and there is no
+  startup error to find, because the API server boots fine and is then terminated.
+  `./cks doctor` recognises this and names it. Fix: `./cks reset 2`.
+* **q13** — `defaultAllow: false` with an unreachable webhook blocks **all** Pod
+  creation cluster-wide, so nothing else can start. Fix: `./cks reset 13`.
 
 **q10 and q11 don't touch the cluster.** macOS has no Docker daemon unit file, and
 kind nodes don't install the kubelet via apt, so an in-place `apt-get install

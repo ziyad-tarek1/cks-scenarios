@@ -12,16 +12,25 @@ q_setup() {
   kubelet_set_authz_mode AlwaysAllow
   kubelet_restart
 
-  # apiserver: weaken authz to AlwaysAllow, remove the admission plugin flag.
-  # NOTE: deliberately NOT "RBAC" alone -- without the Node authorizer the kubelet
-  # is denied (system:node:... cannot list/get), static pods stop being resynced,
-  # and the lab deadlocks with no way back in. AlwaysAllow is insecure but keeps
-  # the node functional, which is what a practice environment needs.
+  # apiserver: remove the admission-plugins flag only.
+  #
+  # Deliberately NOT touching --authorization-mode. Every "insecure" value breaks
+  # the cluster in a way that has nothing to teach:
+  #   RBAC alone  -> the Node authorizer is gone, so the kubelet is denied
+  #                  (system:node:... cannot list/get), static pods stop being
+  #                  resynced and the lab deadlocks with no way back in.
+  #   AlwaysAllow -> "AnonymousAuth is not allowed with the AlwaysAllow authorizer.
+  #                  Resetting AnonymousAuth to false." The kubelet's liveness probe
+  #                  is anonymous, so it gets 401 and the kubelet kills the API
+  #                  server every ~90s, forever.
+  #   ABAC/Webhook-> need a policy/config file; the API server will not start.
+  # Only combinations of Node and RBAC are safe, i.e. the correct answer.
+  #
+  # That is fine, because the real trap in this task is not "set it from scratch",
+  # it is "do not put NodeRestriction in there". The question presents the flag
+  # correct and the grader checks you did not break it.
   mark_apiserver
-  node_sh "
-    sed -i 's|^\( *\)- --authorization-mode=.*|\1- --authorization-mode=AlwaysAllow|' $APISERVER_MANIFEST
-    sed -i '\|--enable-admission-plugins=|d' $APISERVER_MANIFEST" >/dev/null 2>&1
-
+  apiserver_edit rmflag --enable-admission-plugins
   # etcd: turn client cert auth off
   node_sh "sed -i 's|^\( *\)- --client-cert-auth=true|\1- --client-cert-auth=false|' $ETCD_MANIFEST" >/dev/null 2>&1
 
@@ -39,9 +48,15 @@ Harden this cluster. Work on the control-plane node:
    Then: systemctl restart kubelet
 
 2. kube-apiserver ($APISERVER_MANIFEST)
-   - enable the NodeRestriction admission plugin
-   - set the authorization modes to Node and RBAC
-     (NOTE: NodeRestriction is NOT an authorization mode — see q1.md)
+   - enable the NodeRestriction admission plugin  (the flag has been removed)
+   - ensure the authorization modes are Node and RBAC
+
+   CAREFUL: --authorization-mode is already Node,RBAC and must STAY that way.
+   The exam phrases this as \"RBAC + NodeRestriction authorization modes\", and if
+   you take that literally and write --authorization-mode=RBAC,NodeRestriction the
+   API server will not start: NodeRestriction is an ADMISSION PLUGIN, not an
+   authorization mode. The grader checks both that Node and RBAC are present and
+   that you did not put NodeRestriction among them.
 
 3. etcd ($ETCD_MANIFEST)
    - require client certificate authentication
@@ -125,10 +140,7 @@ q_solve() {
   kubelet_set_authz_mode Webhook
   kubelet_restart
   mark_apiserver
-  node_sh "
-    sed -i 's|^\\( *\\)- --authorization-mode=.*|\\1- --authorization-mode=Node,RBAC|' $APISERVER_MANIFEST
-    grep -q 'enable-admission-plugins' $APISERVER_MANIFEST || \\
-      sed -i '/- --authorization-mode=/a\\    - --enable-admission-plugins=NodeRestriction' $APISERVER_MANIFEST
-    sed -i 's|^\\( *\\)- --client-cert-auth=false|\\1- --client-cert-auth=true|' $ETCD_MANIFEST" >/dev/null 2>&1
+  apiserver_edit_multi "setflag --enable-admission-plugins NodeRestriction"
+  node_sh "sed -i 's|^\\( *\\)- --client-cert-auth=false|\\1- --client-cert-auth=true|' $ETCD_MANIFEST" >/dev/null 2>&1
   settle_apiserver 60 || true
 }

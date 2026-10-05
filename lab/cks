@@ -15,6 +15,7 @@ CKS practice lab driver.
   ./cks task   N         print a question's task statement
   ./cks verify [N...]    grade your solution the way the exam would; no args = all 16
   ./cks reset  N...      re-seed question(s), discarding your work on them
+  ./cks reset  all       re-seed everything: the fastest way back to a clean lab
   ./cks solve  N...      apply the reference solution (to study / compare)
 
   ./cks list             list all questions and which are seeded
@@ -23,7 +24,11 @@ CKS practice lab driver.
   ./cks clean            delete the lab cluster and the work dir
   ./cks clean --keep-files   delete the cluster, keep your working files
 
-N accepts 1, 01 or q1. Aliases: check/grade = verify, ls = list, destroy = clean.
+N accepts 1, 01 or q1, or the word `all`.
+Aliases: check/grade = verify, ls = list, destroy = clean.
+
+Note: solving q02 (--anonymous-auth=false) makes the kubelet kill the API server
+every ~90s, because its probes are anonymous. Run `./cks reset 2` when done.
 
 Environment:
   CKS_LAB_DIR     where your working files go      (default ~/cks-lab)
@@ -47,6 +52,9 @@ expand_args() {
   local out a n
   out=""
   if [ "$#" -eq 0 ]; then printf '%s\n' "${ALL_Q[@]}"; return; fi
+  for a in "$@"; do
+    case "$a" in all|ALL) printf '%s\n' "${ALL_Q[@]}"; return ;; esac
+  done
   for a in "$@"; do
     n=$(norm_q "$a") || die "no such question: '$a' (expected 1-16)"
     out="$out$n
@@ -121,6 +129,8 @@ cmd_setup() {
     hdr "Setting up q$q — $(q_title "$q")"
     run_hook "$q" q_setup || warn "q$q setup reported a problem"
   done
+  settle_controlplane
+  settle_workloads
   hdr "Ready."
   printf '  Work dir : %s\n' "$LAB"
   printf '  Context  : %s   (all lab kubectl calls are pinned to this)\n' "$KCTX"
@@ -218,12 +228,35 @@ cmd_doctor() {
     printf '  healthz: ok\n'
   else
     printf '  %s\n' "${C_R}healthz: UNREACHABLE${C_0}"
-    hdr "kube-apiserver container log (last 20 lines)"
+    hdr "kube-apiserver diagnosis"
+    # For a crash-looping container the fatal error is at the START of the log;
+    # `tail` only shows the graceful-shutdown noise that follows it.
     node_sh 'id=$(crictl ps -a --name kube-apiserver -q | head -1)
-             if [ -n "$id" ]; then crictl logs "$id" 2>&1 | tail -20
-             else echo "(no kube-apiserver container exists - the kubelet rejected the manifest)"
-                  journalctl -u kubelet --no-pager -n 300 2>/dev/null | grep -m3 "Could not process manifest file" || true
-             fi' | sed 's/^/  /'
+      if [ -z "$id" ]; then
+        echo "No kube-apiserver container exists - the kubelet rejected the manifest:"
+        journalctl -u kubelet --no-pager -n 300 2>/dev/null \
+          | grep -m2 "Could not process manifest file" || echo "  (no manifest error logged)"
+        exit 0
+      fi
+      att=$(crictl inspect "$id" 2>/dev/null | grep -m1 -o "\"attempt\": *[0-9]*" | grep -o "[0-9]*")
+      echo "restart attempts: ${att:-?}   (a high number means a crash loop)"
+      err=$(crictl logs "$id" 2>&1 | grep -m1 -E "command failed|^F[0-9]|fatal")
+      if [ -n "$err" ]; then
+        echo "STARTUP ERROR (fix the manifest):"
+        echo "  $err"
+      else
+        echo "No startup error - the API server booted, then was terminated."
+        kills=$(journalctl -u kubelet --no-pager --since "-20min" 2>/dev/null \
+                | grep -ciE "Liveness probe failed|Killing container")
+        echo "kubelet probe failures/kills in the last 20min: ${kills:-0}"
+        if grep -q -- "--anonymous-auth=false" /etc/kubernetes/manifests/kube-apiserver.yaml 2>/dev/null; then
+          echo
+          echo "CAUSE: --anonymous-auth=false is set (q02 is solved)."
+          echo "  kubeadm probes /livez and /readyz ANONYMOUSLY, so they get 401 and the"
+          echo "  kubelet keeps killing the container. This is real kubeadm behaviour."
+          echo "  FIX:  ./cks reset 2"
+        fi
+      fi' | sed 's/^/  /'
     hdr "Recover"
     printf '  Restore the known-good manifests:   ./cks restore\n'
   fi
