@@ -19,7 +19,7 @@ q_setup() {
 
   cat > "$d/TASK.md" <<EOF
 1. Configure kube-apiserver to reject anonymous requests.
-       docker exec -it $NODE bash
+       ssh $NODE            # like the exam  (./cks ssh  also works)
        vi $APISERVER_MANIFEST
 
 2. Delete the ClusterRole "$Q2_CR" using the provided kubeconfig:

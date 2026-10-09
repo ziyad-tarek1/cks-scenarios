@@ -18,7 +18,7 @@ q_setup() {
   cat > "$d/TASK.md" <<EOF
 Enable API server audit logging.
 
-    docker exec -it $NODE bash
+    ssh $NODE            # like the exam  (./cks ssh  also works)
 
 1. Create the audit policy at $Q9_POLICY with FOUR rules:
      a) delete on configmaps AND secrets, in all namespaces -> RequestResponse

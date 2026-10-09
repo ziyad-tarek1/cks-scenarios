@@ -106,18 +106,43 @@ Or pass it explicitly each time (what the task text shows, so it's unambiguous):
 kubectl --context kind-cks -n confidential edit deployment psa-app
 ```
 
-For the control-plane questions (q01, q02, q09, q13) you work **on the node**, exactly
-like the exam:
+For the control-plane questions (q01, q02, q09, q13) you work **on the node over
+ssh**, exactly like the exam:
 
 ```bash
-docker exec -it cks-control-plane bash
+ssh cks-control-plane          # the exam form; needs ./cks ssh-config --install once
+# or, with no setup at all:
+./cks ssh                      # control plane
+./cks ssh worker               # worker
 
 # inside:
-vi /etc/kubernetes/manifests/kube-apiserver.yaml
-vi /var/lib/kubelet/config.yaml
+vim /etc/kubernetes/manifests/kube-apiserver.yaml
+vim /var/lib/kubelet/config.yaml
 systemctl restart kubelet
 crictl ps -a --name kube-apiserver        # when kubectl is dead
+exit                                      # back to your own machine
 ```
+
+The nodes get **vim, vi, nano and less** installed automatically (kind's image ships
+no editor at all, not even `vi`), and a real **sshd**, so the muscle memory matches
+the exam: `ssh <node>`, edit, `exit`.
+
+### Making `ssh cks-control-plane` work
+
+The lab generates its own ssh key under `~/cks-lab/ssh/` and publishes each node's
+sshd to a host port (2222 control plane, 2223 worker). `./cks ssh` uses that key
+directly and needs nothing else. For the bare exam form, add the host entries once:
+
+```bash
+./cks ssh-config            # print the block
+./cks ssh-config --install  # append it to ~/.ssh/config
+```
+
+That gives you `ssh cks-control-plane`, `ssh cks-worker` and `ssh cks-node1` (an
+exam-style alias for the worker). It is written between
+`# BEGIN cks-lab` / `# END cks-lab` markers, re-running it replaces rather than
+duplicates the block, and `./cks clean` removes it. Your other ssh hosts are
+untouched. If port 2222 is taken, set `CKS_SSH_PORT` before `./cks setup`.
 
 ### Step 3 — get graded
 
@@ -157,6 +182,8 @@ until `RESULT: PASS`.
 | `./cks verify [N...]` | Grade. No args = all 16, with a combined total at the end. Exit code is 0 only if everything passed, so it's scriptable. |
 | `./cks reset N...` | Re-seed the question, discarding your work. Requires an explicit number — there's no "reset everything" by accident. |
 | `./cks solve N...` | Apply the reference solution. For studying or comparing against your own answer. |
+| `./cks ssh [node]` | ssh into a node as root, like the exam. `node` is `control-plane` (default) or `worker`. Append a command to run it non-interactively. |
+| `./cks ssh-config [--install]` | Print, or append to `~/.ssh/config`, the host entries that make bare `ssh cks-control-plane` work. |
 | `./cks list` | Every question, its title, and whether it's seeded. |
 | `./cks doctor` | Diagnose a broken cluster: node status, control-plane pods, API health, and the real error from the container or kubelet. |
 | `./cks restore` | Put the control-plane manifests and kubelet config back to known-good. Your rescue hatch. |
@@ -173,6 +200,8 @@ Question numbers accept `8`, `08` or `q8`. Aliases: `check` and `grade` = `verif
 CKS_LAB_DIR=~/somewhere                 # working files   (default ~/cks-lab)
 CKS_CLUSTER=cks                         # kind cluster    (default cks)
 CKS_NODE_IMAGE=kindest/node:v1.34.0     # pin the Kubernetes version
+CKS_SSH_PORT=2222                       # host port for the control-plane sshd
+                                        # (worker uses the next one up)
 ```
 
 ---
@@ -341,19 +370,19 @@ docker ps --filter name=cks
 
 | Q | You work on | Seeded for you | Needs |
 |---|---|---|---|
-| 01 | node: kubelet config, apiserver + etcd manifests | cluster deliberately un-hardened | — |
-| 02 | node: apiserver manifest, then `kubectl` | ClusterRole `system:user`, a candidate kubeconfig | — |
+| 01 | node (`ssh cks-control-plane`): kubelet config, apiserver + etcd manifests | cluster deliberately un-hardened | — |
+| 02 | node (`ssh`): apiserver manifest, then `kubectl` | ClusterRole `system:user`, a candidate kubeconfig | — |
 | 03 | `~/cks-lab/q03/{Dockerfile,deployment.yaml}` | a root-running Dockerfile + bare Deployment | — |
 | 04 | `deploy/two-containers` (default ns) | 2-container Deployment, no securityContext | — |
 | 05 | ns `monitoring` | `deploy/token-app`, no ServiceAccount yet | — |
 | 06 | ns `prod`, `data` | 5 test pods, namespaces pre-labelled | — |
 | 07 | default ns + `~/cks-lab/q07/certs/` | cert+key, `deploy/tls-app` | — |
 | 08 | ns `confidential` | `restricted` PSA label + non-compliant 2-container Deployment | — |
-| 09 | node: apiserver manifest + `/etc/kubernetes/audit/` | audit config cleared | — |
+| 09 | node (`ssh`): apiserver manifest + `/etc/kubernetes/audit/` | audit config cleared | — |
 | 10 | `~/cks-lab/q10/{daemon.json,docker.service,group}` | faithful copies of the three real files | — |
 | 11 | `~/cks-lab/q11/plan.sh` | an empty command plan to fill in | — |
 | 12 | default ns + `~/cks-lab/q12/certs/` | cert+key, `svc/myapp-svc`, ingress-nginx installed | — |
-| 13 | node: apiserver manifest + `/etc/kubernetes/imagepolicy/` | `kube.conf` with a placeholder URL, `test-rc.yaml` | — |
+| 13 | node (`ssh`): apiserver manifest + `/etc/kubernetes/imagepolicy/` | `kube.conf` with a placeholder URL, `test-rc.yaml` | — |
 | 14 | ns `falco-lab` + `~/cks-lab/q14/` | 3 Deployments, base+custom rule files, a recorded alert log | — |
 | 15 | ns `sbom-lab` + `~/cks-lab/q15/out/` | a 3-container Pod; target package version discovered from the real images | `bom`, `trivy` |
 | 16 | ns `my-namespace` | `my-app` + 2 clients, Istio installed, namespace **not** labelled yet | `istioctl` |
@@ -418,6 +447,9 @@ All reproduced against a live cluster — these are the mistakes that cost marks
 | q15 verify fails immediately | `bom` / `trivy` missing | `brew install bom trivy` |
 | q16 setup fails | `istioctl` missing | `brew install istioctl` |
 | `docker info` fails | Docker Desktop not running | start it |
+| `ssh cks-control-plane` → `Could not resolve hostname` | host entries not installed | `./cks ssh-config --install` |
+| `ssh` → `Connection refused` | cluster predates the ssh support, or sshd stopped | `./cks clean && ./cks setup` |
+| `vim: command not found` on a node | node provisioning didn't run | `./cks ssh` (it provisions on demand) |
 | Image pulls time out | network | re-run the same `./cks setup N`; it's idempotent |
 
 Still stuck? Rebuilding costs you nothing but time:
@@ -465,7 +497,8 @@ under `~/cks-lab/` (gone unless you use `clean --keep-files`).
 ```
 lab/
   cks                      the only thing you run
-  kind.yaml                cluster definition (1 control-plane + 1 worker)
+  kind.yaml                reference cluster definition (1 control-plane + 1 worker);
+                           ./cks generates its own copy so the ssh ports can move
   lib/
     common.sh              helpers: grading, cluster/node access, manifest safety
     apiserver_edit.py      surgical kube-apiserver manifest editing

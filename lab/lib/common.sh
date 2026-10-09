@@ -6,6 +6,9 @@ KCTX="kind-${CLUSTER}"
 NODE="${CLUSTER}-control-plane"
 WORKER="${CLUSTER}-worker"
 LAB="${CKS_LAB_DIR:-$HOME/cks-lab}"
+SSH_PORT_CP="${CKS_SSH_PORT:-2222}"          # host port -> control-plane sshd
+SSH_PORT_W=$((SSH_PORT_CP + 1))              # host port -> worker sshd
+SSH_KEY="$LAB/ssh/id_ed25519"
 NODE_IMAGE="${CKS_NODE_IMAGE:-}"          # empty => kind's default
 LAB_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -330,4 +333,99 @@ settle_controlplane() {
   done
   warn "control plane is still settling; give it a minute, then ./cks doctor"
   return 0
+}
+
+# --- node access: a real editor, and real ssh ------------------------------
+# kind's node image has no editor at all (not even vi) and no sshd. The exam
+# gives you `ssh <node>` and vim, so the lab installs both into the nodes.
+
+# Generate the kind config so the ssh ports can be moved with CKS_SSH_PORT.
+write_kind_config() { # path
+  cat > "$1" <<EOF
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  extraPortMappings:
+  - containerPort: 2222
+    hostPort: $SSH_PORT_CP
+    listenAddress: "127.0.0.1"
+    protocol: TCP
+- role: worker
+  extraPortMappings:
+  - containerPort: 2222
+    hostPort: $SSH_PORT_W
+    listenAddress: "127.0.0.1"
+    protocol: TCP
+EOF
+}
+
+node_has_tools() {
+  docker exec "$1" bash -c 'command -v vim >/dev/null && command -v sshd >/dev/null' 2>/dev/null
+}
+
+# Install vim/nano/less/openssh-server and start sshd on 2222 in both nodes.
+# Idempotent: skips a node that already has them.
+provision_nodes() {
+  local n
+  mkdir -p "$LAB/ssh"; chmod 700 "$LAB/ssh" 2>/dev/null
+  if [ ! -f "$SSH_KEY" ]; then
+    step "generating the lab ssh key"
+    ssh-keygen -t ed25519 -N '' -f "$SSH_KEY" -C cks-lab >/dev/null 2>&1 \
+      || { warn "ssh-keygen failed; ssh access will not work"; return 1; }
+  fi
+
+  for n in "$NODE" "$WORKER"; do
+    docker inspect "$n" >/dev/null 2>&1 || continue
+    if node_has_tools "$n"; then
+      docker exec "$n" bash -c 'pgrep -x sshd >/dev/null || systemctl restart ssh' >/dev/null 2>&1
+      continue
+    fi
+    step "provisioning $n with vim + sshd (one-off, ~15s) ..."
+    docker exec "$n" bash -c '
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq >/dev/null 2>&1
+      apt-get install -y -qq vim nano less openssh-server >/dev/null 2>&1' >/dev/null 2>&1
+    node_has_tools "$n" || { warn "could not install tooling in $n (no network?)"; continue; }
+  done
+
+  # sshd config + the lab's public key, on both nodes
+  for n in "$NODE" "$WORKER"; do
+    docker inspect "$n" >/dev/null 2>&1 || continue
+    node_has_tools "$n" || continue
+    docker exec -i "$n" bash -s <<'NODESH' >/dev/null 2>&1
+set -e
+mkdir -p /root/.ssh /run/sshd /etc/ssh/sshd_config.d
+chmod 700 /root/.ssh
+cat > /etc/ssh/sshd_config.d/00-cks.conf <<'EOF'
+Port 2222
+PermitRootLogin prohibit-password
+PubkeyAuthentication yes
+PasswordAuthentication no
+UsePAM no
+PrintMotd no
+EOF
+# Older sshd_config files may not Include the drop-in dir.
+grep -q '^Include /etc/ssh/sshd_config.d/\*.conf' /etc/ssh/sshd_config \
+  || sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' /etc/ssh/sshd_config
+ssh-keygen -A >/dev/null 2>&1 || true
+systemctl enable ssh >/dev/null 2>&1 || true
+systemctl restart ssh >/dev/null 2>&1 || /usr/sbin/sshd
+NODESH
+    docker exec -i "$n" sh -c 'cat >> /root/.ssh/authorized_keys.new' < "$SSH_KEY.pub"
+    docker exec "$n" sh -c 'sort -u /root/.ssh/authorized_keys.new > /root/.ssh/authorized_keys
+                            rm -f /root/.ssh/authorized_keys.new
+                            chmod 600 /root/.ssh/authorized_keys' >/dev/null 2>&1
+  done
+}
+
+ssh_port_for() { case "$1" in "$WORKER"|worker|node1) printf '%s' "$SSH_PORT_W";; *) printf '%s' "$SSH_PORT_CP";; esac; }
+
+# ssh into a node using the lab key, with no dependency on ~/.ssh/config
+node_ssh() { # node [command...]
+  local n="$1"; shift
+  local port; port=$(ssh_port_for "$n")
+  ssh -i "$SSH_KEY" -p "$port" \
+      -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+      root@127.0.0.1 "$@"
 }

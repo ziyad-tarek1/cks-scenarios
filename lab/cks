@@ -18,6 +18,10 @@ CKS practice lab driver.
   ./cks reset  all       re-seed everything: the fastest way back to a clean lab
   ./cks solve  N...      apply the reference solution (to study / compare)
 
+  ./cks ssh [node]       ssh into a node, like the exam (node: control-plane | worker)
+  ./cks ssh-config       print an ~/.ssh/config block; --install appends it so
+                         bare `ssh cks-control-plane` works
+
   ./cks list             list all questions and which are seeded
   ./cks doctor           diagnose a broken cluster
   ./cks restore          put the control plane back to known-good
@@ -34,6 +38,8 @@ Environment:
   CKS_LAB_DIR     where your working files go      (default ~/cks-lab)
   CKS_CLUSTER     kind cluster name                (default cks)
   CKS_NODE_IMAGE  pin the Kubernetes version, e.g. kindest/node:v1.34.0
+  CKS_SSH_PORT    host port for the control-plane sshd    (default 2222;
+                  the worker uses the next port up)
 USAGE
   exit "${1:-0}"
 }
@@ -106,7 +112,10 @@ ensure_cluster() {
     step "cluster '$CLUSTER' already exists"
   else
     info "Creating kind cluster '$CLUSTER' (kubeadm: real static pods, etcd, kubelet config)"
-    local cfg="$LAB_ROOT/kind.yaml"
+    local cfg
+    mkdir -p "$LAB"
+    cfg="$LAB/kind-cluster.yaml"
+    write_kind_config "$cfg"
     # bash 3.2 (macOS) errors on empty-array expansion under `set -u`, so branch.
     if [ -n "$NODE_IMAGE" ]; then
       kind create cluster --name "$CLUSTER" --config "$cfg" --wait 180s --image "$NODE_IMAGE" \
@@ -119,6 +128,7 @@ ensure_cluster() {
   k cluster-info >/dev/null 2>&1 || die "cluster is not responding"
   backup_controlplane
   mkdir -p "$LAB"
+  provision_nodes
 }
 
 cmd_setup() {
@@ -215,6 +225,83 @@ cmd_list() {
   printf '  %s\n\n' "${C_D}      files=you edit files under the work dir  host=runs outside the cluster${C_0}"
 }
 
+cmd_ssh() {
+  require_docker
+  local target="$NODE" name="${1:-}"
+  case "$name" in
+    ""|cp|master|control-plane|"$NODE") target="$NODE" ;;
+    w|worker|node1|"$WORKER")           target="$WORKER" ;;
+    *) die "unknown node '$name' (use: control-plane | worker)" ;;
+  esac
+  docker inspect "$target" >/dev/null 2>&1 || die "node '$target' not found. Run: ./cks setup"
+  node_has_tools "$target" || provision_nodes
+  shift 2>/dev/null || true
+  node_ssh "$target" "$@"
+}
+
+cmd_ssh_config() {
+  require_docker
+  local install=no
+  [ "${1:-}" = "--install" ] && install=yes
+  local block
+  block=$(cat <<EOF
+# BEGIN cks-lab   (managed by ./cks -- removed by ./cks clean)
+Host $NODE cks-master cks-cp
+  HostName 127.0.0.1
+  Port $SSH_PORT_CP
+  User root
+  IdentityFile $SSH_KEY
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  LogLevel ERROR
+Host $WORKER cks-node1
+  HostName 127.0.0.1
+  Port $SSH_PORT_W
+  User root
+  IdentityFile $SSH_KEY
+  StrictHostKeyChecking no
+  UserKnownHostsFile /dev/null
+  LogLevel ERROR
+# END cks-lab
+EOF
+)
+  if [ "$install" != yes ]; then
+    printf '%s\n' "$block"
+    printf '\n%s\n' "${C_D}Append this to ~/.ssh/config to use bare 'ssh $NODE':"
+    printf '%s\n\n' "  ./cks ssh-config --install${C_0}"
+    return 0
+  fi
+  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh" 2>/dev/null
+  touch "$HOME/.ssh/config"; chmod 600 "$HOME/.ssh/config" 2>/dev/null
+  # replace any previous block, never duplicate it
+  if grep -q '^# BEGIN cks-lab' "$HOME/.ssh/config" 2>/dev/null; then
+    step "replacing the existing cks-lab block in ~/.ssh/config"
+    python3 - "$HOME/.ssh/config" <<'PY'
+import sys, re
+p = sys.argv[1]; t = open(p).read()
+t = re.sub(r'(?ms)^# BEGIN cks-lab.*?^# END cks-lab\n?', '', t)
+open(p, 'w').write(t)
+PY
+  fi
+  printf '%s\n' "$block" >> "$HOME/.ssh/config"
+  info "~/.ssh/config updated. You can now run:"
+  printf '    ssh %s        # control plane\n' "$NODE"
+  printf '    ssh %s             # worker\n' "$WORKER"
+  printf '\n  %s\n' "${C_D}'./cks clean' removes the block again.${C_0}"
+}
+
+remove_ssh_config_block() {
+  [ -f "$HOME/.ssh/config" ] || return 0
+  grep -q '^# BEGIN cks-lab' "$HOME/.ssh/config" 2>/dev/null || return 0
+  step "removing the cks-lab block from ~/.ssh/config"
+  python3 - "$HOME/.ssh/config" <<'PY'
+import sys, re
+p = sys.argv[1]; t = open(p).read()
+t = re.sub(r'(?ms)^# BEGIN cks-lab.*?^# END cks-lab\n?', '', t)
+open(p, 'w').write(t)
+PY
+}
+
 cmd_doctor() {
   require_docker
   hdr "Cluster"
@@ -285,6 +372,7 @@ cmd_clean() {
   for c in cks-dockerhost; do
     docker rm -f "$c" >/dev/null 2>&1 && step "removed container $c"
   done
+  remove_ssh_config_block
   if [ "$keep_files" = yes ]; then
     step "keeping work dir $LAB"
   elif [ -d "$LAB" ]; then
@@ -303,6 +391,8 @@ case "$cmd" in
   solve)   cmd_solve   "$@" ;;
   task)    cmd_task    "$@" ;;
   list|ls) cmd_list    "$@" ;;
+  ssh)     cmd_ssh     "$@" ;;
+  ssh-config) cmd_ssh_config "$@" ;;
   doctor)  cmd_doctor  "$@" ;;
   restore) cmd_restore "$@" ;;
   clean|destroy) cmd_clean "$@" ;;

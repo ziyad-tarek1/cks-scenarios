@@ -74,7 +74,7 @@ EOF
   cat > "$d/TASK.md" <<EOF
 Enable the ImagePolicyWebhook admission controller.
 
-    docker exec -it $NODE bash
+    ssh $NODE            # like the exam  (./cks ssh  also works)
 
 1. Create the admission config at:
        $Q13_CFG

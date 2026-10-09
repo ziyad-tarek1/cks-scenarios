@@ -1,13 +1,28 @@
-# Lab cluster used to validate q1.md - q16.md (see VALIDATION.md).
-# A kubeadm cluster, so /etc/kubernetes/manifests, etcd and the kubelet config
-# are all real — which is what the control-plane questions need.
+# Lab cluster used by ./cks (see README.md).
 #
-#   kind create cluster --config kind.yaml
-#   docker exec -it cks-control-plane bash
-#   kind delete cluster --name cks
+# A kubeadm cluster, so /etc/kubernetes/manifests, etcd and the kubelet config
+# are all real -- which is what the control-plane questions need.
+#
+# The extraPortMappings publish each node's sshd (container port 2222) to the
+# host, so you can `ssh cks-control-plane` exactly like the exam instead of
+# using `docker exec`. On macOS the container network is not reachable from the
+# host, so a published port is the only way to make real ssh work.
+#
+# ./cks generates its own copy of this at run time so the ports can be moved
+# with CKS_SSH_PORT; this file is the committed reference.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: cks
 nodes:
 - role: control-plane
+  extraPortMappings:
+  - containerPort: 2222
+    hostPort: 2222
+    listenAddress: "127.0.0.1"
+    protocol: TCP
 - role: worker
+  extraPortMappings:
+  - containerPort: 2222
+    hostPort: 2223
+    listenAddress: "127.0.0.1"
+    protocol: TCP

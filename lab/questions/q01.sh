@@ -39,7 +39,7 @@ q_setup() {
   cat > "$d/TASK.md" <<EOF
 Harden this cluster. Work on the control-plane node:
 
-    docker exec -it $NODE bash
+    ssh $NODE            # like the exam  (./cks ssh  also works)
 
 1. Kubelet ($KUBELET_CONFIG)
    - disable anonymous authentication

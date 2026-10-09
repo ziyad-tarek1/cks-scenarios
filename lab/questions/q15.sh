@@ -33,7 +33,7 @@ q_setup() {
   # setup is a fresh start: discard any reports from a previous attempt
   rm -rf "$d/out"
   kq create ns "$Q15_NS"
-  kq -n "$Q15_NS" delete pod "$Q15_POD"
+  k -n "$Q15_NS" delete pod "$Q15_POD" --ignore-not-found --wait=true --timeout=90s >/dev/null 2>&1
   local i=1 containers=""
   for img in $Q15_IMAGES; do
     containers="$containers
@@ -54,13 +54,19 @@ metadata:
 spec:
   containers:$containers"
   rc=1
+  local err=""
   for attempt in 1 2 3; do
-    if printf '%s\n' "$manifest" | k apply -f - >/dev/null 2>&1; then rc=0; break; fi
-    step "API server busy, retrying the Pod apply ($attempt/3) ..."
+    err=$(printf '%s\n' "$manifest" | k apply -f - 2>&1) && { rc=0; break; }
+    # A pod left over from a previous run cannot be updated in place
+    # ("pod updates may not add or remove containers"), so delete and retry
+    # rather than retrying an apply that can never succeed.
+    k -n "$Q15_NS" delete pod "$Q15_POD" --ignore-not-found --wait=true --timeout=90s >/dev/null 2>&1
+    step "retrying the Pod create ($attempt/3) ..."
     wait_apiserver 24 >/dev/null 2>&1 || true
   done
   if [ "$rc" -ne 0 ]; then
-    warn "could not create pod/$Q15_POD -- re-run: ./cks setup 15"
+    warn "could not create pod/$Q15_POD: $(printf '%s' "$err" | tail -1)"
+    warn "re-run: ./cks setup 15"
   elif ! k -n "$Q15_NS" wait --for=condition=Ready "pod/$Q15_POD" --timeout=300s >/dev/null 2>&1; then
     step "pod still pulling images; it will settle shortly"
   fi
