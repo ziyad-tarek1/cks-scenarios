@@ -102,7 +102,27 @@ settle_apiserver() {
     step "kube-apiserver container unchanged (edit already applied, or a no-op)"
     return 0
   fi
-  warn "API server did not come back. Diagnose with:  ./cks doctor"
+  recover_apiserver
+}
+
+# The kubelet can stop resyncing the kube-apiserver static pod: if the container
+# is killed (e.g. its liveness probe fails while etcd is being recreated) at the
+# same moment the kubelet itself restarts, the pod worker loses track and never
+# recreates it. The manifest is valid, the kubelet is "active", and nothing comes
+# back. Restarting the kubelet makes it re-read the static pod directory, which
+# needs no API access and is the one step that reliably fixes this.
+recover_apiserver() {
+  if [ -z "$(apiserver_container_id)" ]; then
+    warn "no running kube-apiserver container -- restarting the kubelet to force a static-pod resync"
+  else
+    warn "kube-apiserver unreachable -- restarting the kubelet"
+  fi
+  node_sh 'systemctl restart kubelet' >/dev/null 2>&1
+  if wait_apiserver 60; then
+    step "API server recovered"
+    return 0
+  fi
+  warn "API server still down. Run ./cks doctor, or rebuild: ./cks clean && ./cks setup"
   return 1
 }
 
@@ -129,31 +149,22 @@ restore_controlplane() {
   # resyncing static pods (it happens when a previous edit locked it out of the
   # API). Deleting the container forces the kubelet to recreate it from the
   # on-disk manifest, which needs no API access.
-  if wait_apiserver 5; then return 0; fi
-  # A kubelet that rejected a bad manifest keeps a stale pod worker and will not
-  # recreate the container even once the file is valid again. Restarting the
-  # kubelet makes it re-read the static pod directory from scratch, which is the
-  # one step that reliably brings the API server back.
-  warn "API server still down; restarting the kubelet to force a static-pod resync"
-  node_sh 'crictl rm -f $(crictl ps -a --name kube-apiserver -q | head -1) >/dev/null 2>&1; systemctl restart kubelet' >/dev/null 2>&1
-  if wait_apiserver 60; then
-    step "API server recovered"
-  else
-    warn "still down. Last resort:  ./cks clean && ./cks setup"
-  fi
+  wait_apiserver 5 || recover_apiserver
 }
 
 # kube-controller-manager can wedge on a stale leader-election lease after
 # repeated API server restarts. Harmless lab artifact; clear it.
 unwedge_controlplane() {
-  local st
-  st=$(k -n kube-system get po -l component=kube-controller-manager \
-         -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null || true)
-  if [ "$st" != "true" ]; then
-    step "clearing stale kube-controller-manager lease"
-    kq -n kube-system delete lease kube-controller-manager || true
-    sleep 5
-  fi
+  local comp lease st
+  # kube-scheduler wedges the same way as the controller-manager.
+  for comp in kube-controller-manager kube-scheduler; do
+    st=$(k -n kube-system get po -l "component=$comp" \
+           -o jsonpath='{.items[0].status.containerStatuses[0].ready}' 2>/dev/null || true)
+    if [ "$st" != "true" ]; then
+      step "clearing stale $comp lease"
+      kq -n kube-system delete lease "$comp" || true
+    fi
+  done
 }
 
 # ---------- grading ----------

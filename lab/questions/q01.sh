@@ -6,12 +6,6 @@ q_setup() {
   backup_controlplane
   step "un-hardening the control plane so there is something to fix"
 
-  # kubelet: enable anonymous, drop webhook authn, authorization -> AlwaysAllow
-  kubelet_set_authn anonymous true
-  kubelet_set_authn webhook false
-  kubelet_set_authz_mode AlwaysAllow
-  kubelet_restart
-
   # apiserver: remove the admission-plugins flag only.
   #
   # Deliberately NOT touching --authorization-mode. Every "insecure" value breaks
@@ -31,10 +25,27 @@ q_setup() {
   # correct and the grader checks you did not break it.
   mark_apiserver
   apiserver_edit rmflag --enable-admission-plugins
-  # etcd: turn client cert auth off
+  # etcd: turn client cert auth off. This RECREATES the etcd static pod, so the
+  # API server loses its datastore for a few seconds and its liveness probe fails.
   node_sh "sed -i 's|^\( *\)- --client-cert-auth=true|\1- --client-cert-auth=false|' $ETCD_MANIFEST" >/dev/null 2>&1
 
+  # Let the control plane come back BEFORE touching the kubelet.
+  #
+  # Doing all three at once (apiserver manifest + etcd manifest + kubelet restart)
+  # is a race: etcd disappearing fails the API server's liveness probe, the kubelet
+  # kills the container, and if the kubelet is restarting at that moment its pod
+  # worker loses track and never recreates it. The manifest is valid and the
+  # kubelet reports active, but nothing comes back.
   settle_apiserver 60 || true
+  wait_apiserver 60 >/dev/null 2>&1 || true
+
+  # kubelet last, on its own. AlwaysAllow is safe HERE: this is the kubelet's own
+  # authorizer, not the API server's, so it does not affect the API server probes.
+  kubelet_set_authn anonymous true
+  kubelet_set_authn webhook false
+  kubelet_set_authz_mode AlwaysAllow
+  kubelet_restart
+  wait_apiserver 60 >/dev/null 2>&1 || true
 
   cat > "$d/TASK.md" <<EOF
 Harden this cluster. Work on the control-plane node:
@@ -135,12 +146,16 @@ q_verify() {
 }
 
 q_solve() {
-  kubelet_set_authn anonymous false
-  kubelet_set_authn webhook true
-  kubelet_set_authz_mode Webhook
-  kubelet_restart
+  # Same ordering discipline as q_setup: control plane first, then the kubelet.
   mark_apiserver
   apiserver_edit_multi "setflag --enable-admission-plugins NodeRestriction"
   node_sh "sed -i 's|^\\( *\\)- --client-cert-auth=false|\\1- --client-cert-auth=true|' $ETCD_MANIFEST" >/dev/null 2>&1
   settle_apiserver 60 || true
+  wait_apiserver 60 >/dev/null 2>&1 || true
+
+  kubelet_set_authn anonymous false
+  kubelet_set_authn webhook true
+  kubelet_set_authz_mode Webhook
+  kubelet_restart
+  wait_apiserver 60 >/dev/null 2>&1 || true
 }
